@@ -1,0 +1,17 @@
+# Secrets — NEVER commit these
+.env
+*.env
+!.env.example
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Node / frontend (for later phases)
+node_modules/
+.next/
+
+# OS junk
+.DS_Store
+Thumbs.db
