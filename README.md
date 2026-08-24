@@ -73,15 +73,15 @@ apex-commerce/
 │   ├── .env.example
 │   ├── .gitignore
 │   └── requirements.txt
-└── frontend/                   # (Phase 7)
-
+└── frontend/  # (Phase 7)
+```
 ---
 
 ## Local setup
 
 1. **Clone and enter the backend**
 ```powershell
-   git clone https://github.com/<your-username>/apex-commerce.git
+   git clone https://github.com/Subhra-Nandi/apex-commerce.git
    cd apex-commerce/backend
 ```
 
@@ -111,7 +111,7 @@ apex-commerce/
 
 ## Build roadmap
 
-- [] **Phase 1** — Environment setup & database schema
+- [ ] **Phase 1** — Environment setup & database schema
 - [ ] **Phase 2** — Agent Commerce Interface (ACI) catalog engine
 - [ ] **Phase 3** — Razorpay SDK & webhook listener
 - [ ] **Phase 4** — Deterministic Policy Enclave
