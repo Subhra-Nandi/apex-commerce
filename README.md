@@ -57,21 +57,23 @@ proposal against hard spending caps, price-floor rules, and idempotency checks
 ---
 
 ## Project structure
+
+```text
 apex-commerce/
 ├── backend/
-│ ├── app/
-│ │ ├── database/
-│ │ │ ├── models.py # SQLAlchemy tables
-│ │ │ ├── session.py # DB engine + connection
-│ │ │ └── init_db.py # creates tables
-│ │ ├── catalog/ # (Phase 2)
-│ │ ├── payments/ # (Phase 3)
-│ │ ├── enclave/ # (Phase 4) deterministic policy rules
-│ │ └── agents/ # (Phase 5) Gemini agents
-│ ├── .env.example
-│ ├── .gitignore
-│ └── requirements.txt
-└── frontend/ # (Phase 7)
+│   ├── app/
+│   │   ├── database/
+│   │   │   ├── models.py       # SQLAlchemy tables
+│   │   │   ├── session.py      # DB engine + connection
+│   │   │   └── init_db.py      # Creates tables
+│   │   ├── catalog/            # (Phase 2)
+│   │   ├── payments/           # (Phase 3)
+│   │   ├── enclave/            # (Phase 4) Deterministic policy rules
+│   │   └── agents/             # (Phase 5) Gemini agents
+│   ├── .env.example
+│   ├── .gitignore
+│   └── requirements.txt
+└── frontend/                   # (Phase 7)
 
 ---
 
