@@ -45,7 +45,7 @@ def create_payment_link(
     currency: str = "INR",
     customer_name: str = "Demo Buyer",
     customer_email: str = "demo@apexcommerce.test",
-    customer_contact: str = "+919999999999",
+    customer_contact: str = "+919812345670",
     notes: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """
