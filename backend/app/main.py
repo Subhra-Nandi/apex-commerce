@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.catalog.routes import router as catalog_router
+from app.payments.routes import router as payments_router
 
 app = FastAPI(
     title="APEX-Commerce",
@@ -25,8 +26,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register the catalog / ACI routes.
+# Register routes.
 app.include_router(catalog_router)
+app.include_router(payments_router)
 
 
 @app.get("/")
