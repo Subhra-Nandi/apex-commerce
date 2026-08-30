@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.catalog.routes import router as catalog_router
+from app.enclave.routes import router as enclave_router
 from app.payments.routes import router as payments_router
 
 app = FastAPI(
@@ -16,8 +17,6 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Allow the frontend dashboard (Phase 7) to call this API from the browser.
-# For the hackathon we allow all origins; tighten this before any real deployment.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,12 +25,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register routes.
 app.include_router(catalog_router)
 app.include_router(payments_router)
+app.include_router(enclave_router)
 
 
 @app.get("/")
 def health_check():
-    """Simple check to confirm the server is alive."""
     return {"status": "ok", "service": "APEX-Commerce", "version": "0.1.0"}
