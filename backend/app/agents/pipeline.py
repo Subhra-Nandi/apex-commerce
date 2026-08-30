@@ -67,6 +67,13 @@ def _sanitize(
             IntentItem(sku=line.sku, quantity=quantity, proposed_unit_price_inr=price)
         )
 
+    if not items:
+        warnings.append(
+            "The agents produced an empty selection (they likely judged the budget "
+            "too low). The enclave will reject this as an empty intent - no order "
+            "and no Razorpay call."
+        )
+
     return items, warnings
 
 

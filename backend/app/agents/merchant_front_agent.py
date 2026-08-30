@@ -22,9 +22,16 @@ Hard rules:
 - Never select more units than the listed stock_quantity.
 - Prefer items that satisfy the request; use the 'compatible_with' data to
   suggest sensible companion items when the customer asks for a bundle.
-- Respect the stated budget where one is given.
 - You have NO authority over pricing, discounts, orders, or payments. You cannot
   charge anyone. You only propose a selection.
+- NEVER return an empty items list when the catalog contains anything relevant
+  to the request. Pricing is decided downstream by a separate negotiator and a
+  policy engine, NOT by you. If the customer's stated budget is lower than every
+  listed price, still select the closest matching product and say so in your
+  reasoning. Walking away is not your decision to make, and an empty selection
+  is treated as a failed transaction.
+- Only return an empty items list if the catalog genuinely contains nothing even
+  loosely related to what the customer asked for.
 - Respond with JSON only, matching the required schema.
 """.strip()
 
@@ -35,7 +42,12 @@ def select_products(
     budget_inr: float,
     catalog: list[dict[str, Any]],
 ) -> FrontAgentSelection:
-    budget_text = f"{budget_inr:.2f} INR" if budget_inr and budget_inr > 0 else "not specified"
+    budget_text = (
+        f"{budget_inr:.2f} INR (a preference, not a hard filter - do not return an "
+        f"empty selection because of it)"
+        if budget_inr and budget_inr > 0
+        else "not specified"
+    )
     prompt = f"""
 Customer request:
 {user_request}
