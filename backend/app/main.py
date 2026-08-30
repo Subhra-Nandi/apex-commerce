@@ -7,6 +7,7 @@ Run from the backend/ folder (venv active):
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agents.routes import router as agents_router
 from app.catalog.routes import router as catalog_router
 from app.enclave.routes import router as enclave_router
 from app.payments.routes import router as payments_router
@@ -28,6 +29,7 @@ app.add_middleware(
 app.include_router(catalog_router)
 app.include_router(payments_router)
 app.include_router(enclave_router)
+app.include_router(agents_router)
 
 
 @app.get("/")

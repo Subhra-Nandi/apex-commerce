@@ -111,11 +111,11 @@ apex-commerce/
 
 ## Build roadmap
 
-- [ ] **Phase 1** — Environment setup & database schema
-- [ ] **Phase 2** — Agent Commerce Interface (ACI) catalog engine
-- [ ] **Phase 3** — Razorpay SDK & webhook listener
-- [ ] **Phase 4** — Deterministic Policy Enclave
-- [ ] **Phase 5** — Multi-agent intelligence engine (Gemini)
+- [ x ] **Phase 1** — Environment setup & database schema
+- [ x ] **Phase 2** — Agent Commerce Interface (ACI) catalog engine
+- [ x ] **Phase 3** — Razorpay SDK & webhook listener
+- [ x ] **Phase 4** — Deterministic Policy Enclave
+- [  ] **Phase 5** — Multi-agent intelligence engine (Gemini)
 - [ ] **Phase 6** — Graceful failure & auto-recovery
 - [ ] **Phase 7** — Next.js dashboard & live demo
 
