@@ -1,13 +1,13 @@
 """
-Shared Google Gemini client plus a helper that forces structured JSON output
-matching a Pydantic schema.
+GEMINI PROVIDER.
 
-The client is created lazily (on first use) so the whole API can still start
-even if GEMINI_API_KEY is missing - only the agent endpoints would fail.
+One job: send a prompt to Google Gemini and return the raw JSON text it replies
+with. It does NOT validate or retry - app/agents/llm_router.py handles that.
+
+The client is created lazily so the API still starts without a Gemini key.
 """
 
-import json
-from typing import Type, TypeVar
+from typing import Type
 
 from google import genai
 from google.genai import types
@@ -15,9 +15,15 @@ from pydantic import BaseModel
 
 from app.config import GEMINI_API_KEY, GEMINI_MODEL
 
-T = TypeVar("T", bound=BaseModel)
-
 _client = None
+
+
+def is_configured() -> bool:
+    return bool(GEMINI_API_KEY)
+
+
+def model_name() -> str:
+    return GEMINI_MODEL
 
 
 def _get_client():
@@ -32,29 +38,17 @@ def _get_client():
     return _client
 
 
-def _strip_code_fence(text: str) -> str:
-    """Some models wrap JSON in ```json fences. Remove them if present."""
-    t = (text or "").strip()
-    if t.startswith("```"):
-        lines = t.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        t = "\n".join(lines).strip()
-    return t
-
-
-def generate_structured(
+def generate_json(
     *,
     system_instruction: str,
     prompt: str,
-    schema: Type[T],
+    schema: Type[BaseModel],
     temperature: float = 0.2,
-) -> T:
+) -> str:
     """
-    Ask Gemini for a response that conforms exactly to `schema`.
-    Low temperature keeps commercial reasoning consistent rather than creative.
+    Ask Gemini for JSON. Gemini supports native structured output, so we hand it
+    the Pydantic schema directly - the strongest guarantee available to us.
+    Returns the raw response text.
     """
     client = _get_client()
     response = client.models.generate_content(
@@ -67,12 +61,4 @@ def generate_structured(
             response_schema=schema,
         ),
     )
-
-    # Preferred path: the SDK parses the JSON into our Pydantic model for us.
-    parsed = getattr(response, "parsed", None)
-    if isinstance(parsed, schema):
-        return parsed
-
-    # Fallback: parse the raw text ourselves.
-    raw = _strip_code_fence(response.text)
-    return schema.model_validate(json.loads(raw))
+    return response.text or ""

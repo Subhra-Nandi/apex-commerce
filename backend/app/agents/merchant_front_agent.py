@@ -1,14 +1,15 @@
 """
-MERCHANT FRONT AGENT (Gemini 2.5 Flash)
+MERCHANT FRONT AGENT
 
 Reads a natural-language shopping request and selects real SKUs from the
 catalog. It has no pricing authority and no ability to execute anything.
+Runs on whichever LLM provider is healthy (see app/agents/llm_router.py).
 """
 
 import json
 from typing import Any
 
-from app.agents.gemini_client import generate_structured
+from app.agents.llm_router import generate_structured
 from app.agents.schemas import FrontAgentSelection
 
 SYSTEM_INSTRUCTION = """
@@ -41,6 +42,7 @@ def select_products(
     user_request: str,
     budget_inr: float,
     catalog: list[dict[str, Any]],
+    trace: list[dict[str, Any]] | None = None,
 ) -> FrontAgentSelection:
     budget_text = (
         f"{budget_inr:.2f} INR (a preference, not a hard filter - do not return an "
@@ -66,4 +68,5 @@ reasoning in the 'reasoning' field, and give a short 'why' for each item.
         prompt=prompt,
         schema=FrontAgentSelection,
         temperature=0.2,
+        trace=trace,
     )

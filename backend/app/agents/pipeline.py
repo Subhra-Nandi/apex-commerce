@@ -94,9 +94,15 @@ def run_negotiation(
         round(mandate.max_transaction_amount_paise / 100, 2) if mandate else 0.0
     )
 
+    # Records which provider/model actually served each agent call.
+    llm_trace: list[dict[str, Any]] = []
+
     # --- Agent 1: pick the products ---
     selection: FrontAgentSelection = merchant_front_agent.select_products(
-        user_request=user_request, budget_inr=budget_inr, catalog=catalog
+        user_request=user_request,
+        budget_inr=budget_inr,
+        catalog=catalog,
+        trace=llm_trace,
     )
 
     # --- Agent 2: price them ---
@@ -105,9 +111,16 @@ def run_negotiation(
         catalog=catalog,
         budget_inr=budget_inr,
         per_transaction_cap_inr=cap_inr,
+        trace=llm_trace,
     )
 
     items, warnings = _sanitize(proposal, known_skus)
+
+    served_by = [
+        f"{entry['provider']}/{entry['model']}"
+        for entry in llm_trace
+        if entry["status"] == "success"
+    ]
 
     reasoning = (
         f"[Front Agent] {selection.reasoning} "
@@ -121,5 +134,7 @@ def run_negotiation(
         "negotiator": proposal.model_dump(),
         "warnings": warnings,
         "llm_saw_cost_prices": False,
+        "served_by": served_by,
+        "llm_trace": llm_trace,
     }
     return intent, details

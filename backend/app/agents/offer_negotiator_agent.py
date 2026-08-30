@@ -1,16 +1,17 @@
 """
-GROWTH OFFER NEGOTIATOR (Gemini 2.5 Flash)
+GROWTH OFFER NEGOTIATOR
 
 Takes the Front Agent's selection and proposes per-unit prices to maximise
 conversion. It is deliberately NOT told the cost price or the margin floor, so
 it cannot reverse-engineer them. The deterministic enclave independently
 validates and may override every price it proposes.
+Runs on whichever LLM provider is healthy (see app/agents/llm_router.py).
 """
 
 import json
 from typing import Any
 
-from app.agents.gemini_client import generate_structured
+from app.agents.llm_router import generate_structured
 from app.agents.schemas import FrontAgentSelection, NegotiatorProposal
 from app.config import MAX_AGENT_DISCOUNT_PERCENTAGE
 
@@ -30,6 +31,7 @@ Hard rules:
 - You have NO ability to create orders, charge cards, or move money.
 - Keep discounts modest and justified. Bundle discounts are preferable to deep
   single-item discounts.
+- Include every item the Front Agent selected. Do not silently drop items.
 - Respond with JSON only, matching the required schema.
 """.strip()
 
@@ -40,6 +42,7 @@ def negotiate(
     catalog: list[dict[str, Any]],
     budget_inr: float,
     per_transaction_cap_inr: float,
+    trace: list[dict[str, Any]] | None = None,
 ) -> NegotiatorProposal:
     budget_text = f"{budget_inr:.2f} INR" if budget_inr and budget_inr > 0 else "not specified"
     cap_text = (
@@ -69,4 +72,5 @@ approach in 'strategy', a customer-facing sentence in 'offer_note', and a short
         prompt=prompt,
         schema=NegotiatorProposal,
         temperature=0.3,
+        trace=trace,
     )
