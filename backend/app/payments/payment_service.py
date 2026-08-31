@@ -1,41 +1,40 @@
 """
-All Razorpay interactions live here:
-  - create_order:           make a Razorpay Order (amount in paise)
-  - create_payment_link:    make a hosted checkout link (for step-up approval)
-  - verify_payment_signature:  verify a Checkout success callback (HMAC)
-  - verify_webhook_signature:  verify an inbound webhook (HMAC)
-
-Both verification functions use HMAC-SHA256 exactly as Razorpay documents,
-and compare with hmac.compare_digest to prevent timing attacks.
+All Razorpay input/output lives here, plus both HMAC signature verifiers.
+Nothing in this file makes a policy decision - it only talks to Razorpay.
 """
 
 import hashlib
 import hmac
-from typing import Any, Optional
 
-from app.config import RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET
+import requests
+from requests.auth import HTTPBasicAuth
+
+from app.config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET
 from app.payments.razorpay_client import client
 
 
 def create_order(
     amount_paise: int,
     currency: str = "INR",
-    receipt: Optional[str] = None,
-    notes: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
+    receipt: str | None = None,
+    notes: dict | None = None,
+    offer_id: str | None = None,
+) -> dict:
     """
-    Create a Razorpay Order. This does NOT charge anyone; it registers an
-    intended payment that a checkout can later fulfil.
+    Create a Razorpay Order. `offer_id` is optional and only used by auto-recovery
+    counter-offers; it must be an offer you created in the Razorpay Dashboard.
     """
-    payload: dict[str, Any] = {
-        "amount": amount_paise,     # Razorpay expects paise
+    payload: dict = {
+        "amount": amount_paise,
         "currency": currency,
-        "payment_capture": 1,       # auto-capture once paid
+        "payment_capture": 1,
     }
     if receipt:
         payload["receipt"] = receipt[:40]   # Razorpay caps receipt at 40 chars
     if notes:
         payload["notes"] = notes
+    if offer_id:
+        payload["offer_id"] = offer_id
     return client.order.create(data=payload)
 
 
@@ -46,13 +45,14 @@ def create_payment_link(
     customer_name: str = "Demo Buyer",
     customer_email: str = "demo@apexcommerce.test",
     customer_contact: str = "+919812345670",
-    notes: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
+    notes: dict | None = None,
+) -> dict:
     """
-    Create a hosted Razorpay Payment Link. The returned 'short_url' is a page
-    the human opens to pay. We use this for the >Rs.2,000 step-up approval flow.
+    Create a Razorpay Payment Link. This is our step-up human approval channel:
+    the human opens the link and confirms with UPI, so the agent alone cannot
+    complete a high-value purchase.
     """
-    payload: dict[str, Any] = {
+    payload: dict = {
         "amount": amount_paise,
         "currency": currency,
         "accept_partial": False,
@@ -70,11 +70,29 @@ def create_payment_link(
     return client.payment_link.create(payload)
 
 
+def list_offers() -> list[dict]:
+    """
+    Fetch offers configured in the Razorpay Dashboard. Offers cannot be created
+    through the API on test accounts, so this is read-only. Returns an empty list
+    on any error - a missing offer must never break a checkout.
+    """
+    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+        return []
+    try:
+        response = requests.get(
+            "https://api.razorpay.com/v1/offers",
+            auth=HTTPBasicAuth(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET),
+            timeout=20,
+        )
+        if response.status_code >= 400:
+            return []
+        return response.json().get("items", []) or []
+    except Exception:  # noqa: BLE001 - diagnostics only, never fatal
+        return []
+
+
 def verify_payment_signature(order_id: str, payment_id: str, signature: str) -> bool:
-    """
-    Verify a Razorpay Checkout success callback.
-    Razorpay computes: HMAC_SHA256(order_id + "|" + payment_id, key_secret).
-    """
+    """Verifies a Checkout callback: HMAC-SHA256 over 'order_id|payment_id'."""
     message = f"{order_id}|{payment_id}".encode()
     expected = hmac.new(
         RAZORPAY_KEY_SECRET.encode(), message, hashlib.sha256
@@ -84,15 +102,13 @@ def verify_payment_signature(order_id: str, payment_id: str, signature: str) -> 
 
 def verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
     """
-    Verify an inbound webhook.
-    Razorpay computes: HMAC_SHA256(raw_request_body, webhook_secret).
-    IMPORTANT: we must hash the EXACT raw bytes of the body, not a re-serialized
-    version, or the signature will never match.
+    Verifies a webhook: HMAC-SHA256 over the RAW request body using the webhook
+    secret. The raw bytes matter - re-serialised JSON will not match.
     """
     if not RAZORPAY_WEBHOOK_SECRET:
         raise RuntimeError(
-            "RAZORPAY_WEBHOOK_SECRET is not set in backend/.env. It must match "
-            "the secret you enter in the Razorpay dashboard webhook settings."
+            "RAZORPAY_WEBHOOK_SECRET is not set. Add it to backend/.env and paste "
+            "the identical value into the Razorpay Dashboard webhook config."
         )
     if not signature:
         return False
