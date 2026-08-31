@@ -116,7 +116,7 @@ apex-commerce/
 - [X] **Phase 3** — Razorpay SDK & webhook listener
 - [X] **Phase 4** — Deterministic Policy Enclave
 - [X] **Phase 5** — Multi-agent intelligence engine (Gemini)
-- [ ] **Phase 6** — Graceful failure & auto-recovery
+- [X] **Phase 6** — Graceful failure & auto-recovery
 - [ ] **Phase 7** — Next.js dashboard & live demo
 
 ---
