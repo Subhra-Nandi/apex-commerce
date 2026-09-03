@@ -7,12 +7,26 @@ Auto-recovery and slippage-simulation routes.
     POST /recovery/slippage/cost   -> simulate supplier cost slippage
     POST /recovery/slippage/reset  -> restore the seeded catalog
     GET  /recovery/offers          -> Razorpay Dashboard offers (read-only)
+
+WHAT CHANGED IN THIS VERSION
+----------------------------
+/recovery/agent-purchase is the only route here that talks to a language model,
+and it was the route that produced raw 500 tracebacks when the model provider ran
+dry - Gemini's free daily quota back then, a gorouter.app insufficient_user_quota
+today (that gateway bills Claude Opus 5 per call, and reports an empty balance as a
+quota message rather than an HTTP 402). It now answers a clean 503 saying no order
+was created and no money moved. Every other route in this file is 100%
+deterministic and never needed the guard.
+
+Note the ordering: the model runs BEFORE recovery, so an AI outage cannot leave
+a half-recovered order behind. There is nothing to roll back.
 """
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.agents import llm_guard
 from app.agents import pipeline as agent_pipeline
 from app.agents.schemas import AgentRequest
 from app.config import RAZORPAY_OFFER_ID
@@ -44,15 +58,25 @@ def recovery_checkout(intent: PurchaseIntent, db: Session = Depends(get_db)):
 @router.post("/recovery/agent-purchase")
 def recovery_agent_purchase(body: AgentRequest, db: Session = Depends(get_db)):
     """
-    The full resilient loop: Gemini agents propose -> enclave decides -> if it
+    The full resilient loop: the LLM agents propose -> enclave decides -> if it
     rejects, deterministic recovery builds a counter-offer and resubmits.
     """
-    intent, details = agent_pipeline.run_negotiation(
-        db,
-        agent_id=body.agent_id,
-        user_request=body.request,
-        budget_inr=body.budget_inr,
-    )
+    try:
+        intent, details = agent_pipeline.run_negotiation(
+            db,
+            agent_id=body.agent_id,
+            user_request=body.request,
+            budget_inr=body.budget_inr,
+        )
+    except RuntimeError as error:
+        if not llm_guard.is_llm_failure(error):
+            raise
+        # The model never produced an intent, so recovery has nothing to repair
+        # and the enclave was never asked. No order row, no Razorpay call.
+        return llm_guard.unavailable_response(
+            error, endpoint="/recovery/agent-purchase"
+        )
+
     result = recovery_pipeline.run_checkout_with_recovery(db, intent)
     return {
         "ai_proposal": details,

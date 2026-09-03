@@ -284,6 +284,21 @@ function Step({ index, icon: Icon, title, tone, subtitle, children, last }) {
 
 /* --------------------------------------------------------------- the page */
 
+/* Turn a raw model id from the backend into something a human reads easily.
+   Unknown ids pass straight through (minus any vendor/ prefix), so this can never
+   hide what the backend actually reported - it only tidies the ids we know. */
+const MODEL_LABELS = {
+  "claude-opus-5": "Claude Opus 5",
+  "claude-opus-5-thinking": "Claude Opus 5 (thinking)",
+  "gemini-2.5-flash": "Gemini 2.5 Flash",
+};
+
+function modelLabel(id) {
+  if (!id) return null;
+  if (MODEL_LABELS[id]) return MODEL_LABELS[id];
+  return id.includes("/") ? id.split("/").pop() : id;
+}
+
 const PRESETS = [
   {
     label: "keyboard + hub",
@@ -433,10 +448,12 @@ export default function Home() {
 
             <div className="flex flex-wrap items-center gap-2">
               <Pill tone="cyan" icon={Sparkles}>
-                {llm?.primary?.model || "Gemini 2.5 Flash"}
+                {modelLabel(llm?.primary?.model) || "Claude Opus 5"}
               </Pill>
               <Pill tone={llm?.fallback?.configured ? "amber" : "zinc"} icon={RefreshCw}>
-                Fallback {llm?.fallback?.free_models_discovered?.length ?? 0}
+                {llm?.fallback?.configured
+                  ? `Fallback ${modelLabel(llm.fallback.model)}`
+                  : "Gemini fallback off"}
               </Pill>
               <Pill
                 tone={health === false ? "rose" : health ? "emerald" : "zinc"}
@@ -719,7 +736,7 @@ export default function Home() {
                     title="Agent intent & proposal"
                     subtitle={
                       <Pill tone="cyan">
-                        {result.ai?.served_by?.[0] || "llm"}
+                        {modelLabel(result.ai?.served_by?.[0]) || "llm"}
                       </Pill>
                     }
                   >
