@@ -22,6 +22,22 @@ that need a live decision object are reported as [SKIP], never [FAIL].
 Every check below is a property that must hold for the project to be honest
 about its own safety claims. A [FAIL] is a real bug. A [SKIP] means this run
 could not exercise it. An [INFO] is context.
+
+TWO RULES THIS FILE LEARNED THE HARD WAY
+----------------------------------------
+1. Assert the HTTP status BEFORE reading the body. A 404 or a 500 returns a
+   body with no cost fields, no decision and no priced lines - so a check
+   that scans it prints [PASS] while verifying absolutely nothing. A green
+   tick on an error body is worse than a red one, because nobody investigates
+   it. Every endpoint this file trusts is now status-checked first.
+2. Paths are load-bearing. The agent-facing catalog is served under /aci/,
+   not /catalog. This file now reads the path out of the discovery manifest
+   instead of hard-coding a guess.
+
+A full run costs about 12 Gemini requests, and the free tier allows only
+20 PER DAY per model. Section 1 warns you if the OpenRouter fallback is not
+configured, because without it an exhausted quota turns every negotiation
+into a 500.
 """
 
 import json
@@ -35,6 +51,7 @@ AGENT = "agent-buyer-01"
 PASSED = []
 FAILED = []
 SKIPPED = []
+MODEL_CALLS = [0]  # every AI call this run spends, for free-tier budgeting
 
 
 def call(path, body=None, timeout=240):
@@ -79,6 +96,60 @@ def skip(name, why):
     print(f"  [SKIP] {name}  ->  {why}")
 
 
+def endpoint_ok(name, status, body=None):
+    """Confirm an endpoint really answered 200 before trusting anything in it.
+
+    A non-200 here is recorded as a genuine [FAIL], not a [SKIP]: unlike an
+    idempotent replay (which is the system working as designed), an error
+    response means the feature under test did not run at all.
+    """
+    if status == 200:
+        PASSED.append(name)
+        print(f"  [PASS] {name}  ->  status 200")
+        return True
+
+    if status >= 500:
+        hint = (" - the server raised an exception. Read the uvicorn window."
+                " Most likely 'All LLM providers failed': Gemini's free tier"
+                " is 20 requests PER DAY, and the OpenRouter fallback is not"
+                " picking up the slack.")
+    elif status == 404:
+        hint = " - this route does not exist on the server. Wrong path."
+    elif status == 0:
+        hint = f" - could not connect: {(body or {}).get('error')}"
+    else:
+        hint = f" - {str(body)[:120]}"
+    check(name, False, f"status {status}{hint}")
+    return False
+
+
+def numbers_in(node, found=None):
+    """Every numeric value anywhere inside a JSON structure.
+
+    Numbers written as strings count too, because JSON-LD renders prices as
+    strings ("1299.00"). This lets us hunt for a leaked cost FIGURE even if
+    someone hides it behind an innocent-looking field name.
+    """
+    if found is None:
+        found = set()
+    if isinstance(node, dict):
+        for value in node.values():
+            numbers_in(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            numbers_in(value, found)
+    elif isinstance(node, bool):
+        pass  # bool is a subclass of int in Python; ignore True/False
+    elif isinstance(node, (int, float)):
+        found.add(round(float(node), 2))
+    elif isinstance(node, str):
+        try:
+            found.add(round(float(node), 2))
+        except (TypeError, ValueError):
+            pass
+    return found
+
+
 def head(text):
     print(f"\n=== {text} " + "=" * max(0, 62 - len(text)))
 
@@ -88,7 +159,12 @@ def rs(paise):
 
 
 def buy(request_text, budget, resilient=False):
-    """Ask the agent to shop. Returns the whole response body."""
+    """Ask the agent to shop. Returns (status, whole response body).
+
+    Every call here runs the two-agent pipeline (Front Agent + Negotiator),
+    which is TWO model requests. That is why the tally matters on a free tier.
+    """
+    MODEL_CALLS[0] += 2
     path = "/recovery/agent-purchase" if resilient else "/agent/purchase"
     status, data = call(
         path, {"agent_id": AGENT, "request": request_text, "budget_inr": budget}
@@ -141,12 +217,39 @@ def money_api_touched(enclave_result):
 
 
 # --------------------------------------------------------------------------
-head("1. Backend reachable")
+head("1. Backend reachable and AI providers ready")
 status, root = call("/")
 if not check("GET / responds 200", status == 200, f"status {status}"):
     print("\nBackend is not up. Run: uvicorn app.main:app --reload")
     sys.exit(1)
 info(f"version {(root or {}).get('version', 'unknown')}")
+
+# Ask which providers are live BEFORE spending any of them. This is the
+# pre-flight that turns a mid-run 500 into a warning you get up front.
+status, llm = call("/agent/llm-status")
+if status == 200:
+    primary = (llm or {}).get("primary") or {}
+    fallback = (llm or {}).get("fallback") or {}
+    check("a primary AI provider is configured",
+          bool(primary.get("configured")),
+          f"{primary.get('provider')}/{primary.get('model')}")
+    chain = fallback.get("will_try_in_order") or []
+    if fallback.get("configured"):
+        check("the fallback chain has at least one model",
+              len(chain) > 0,
+              f"{fallback.get('free_models_discovered')} free models discovered, "
+              f"will try {len(chain)}")
+        if fallback.get("discovery_error"):
+            info(f"fallback discovery error: {fallback.get('discovery_error')}")
+    else:
+        info("WARNING: OpenRouter fallback is NOT configured (no API key). If"
+             " Gemini's free daily quota is spent, every negotiation in this"
+             " run will return 500 and the AI-dependent sections will FAIL."
+             " Set OPENROUTER_API_KEY in backend/.env and restart uvicorn.")
+else:
+    info(f"GET /agent/llm-status returned {status}; cannot confirm failover")
+info("this run will spend roughly 12 AI requests; the Gemini free tier"
+     " allows 20 PER DAY per model")
 
 # --------------------------------------------------------------------------
 head("2. Restore the catalog to a known state")
@@ -203,14 +306,51 @@ by_sku = {p.get("sku"): p for p in products}
 
 # --------------------------------------------------------------------------
 head("5. The agent-facing catalog hides cost prices")
-status, public = call("/catalog")
-blob = json.dumps(public or {}).lower()
-leaks = [word for word in ("cost_price", "cost_inr", "min_margin") if word in blob]
-check(
-    "no cost or margin field appears in /catalog",
-    not leaks,
-    "leaked: " + ", ".join(leaks) if leaks else "clean",
-)
+# This is the project's headline data-minimisation claim, so it gets tested
+# properly. The agent catalog lives under /aci/ - NOT /catalog. Reading the
+# path out of the discovery manifest means a route rename can never again
+# leave this check quietly scanning a 404 body and reporting "clean".
+status, manifest = call("/.well-known/aci.json")
+endpoint_ok("GET /.well-known/aci.json responds 200 (agent discovery)",
+            status, manifest)
+advertised = ((manifest or {}).get("endpoints") or {}).get("catalog")
+check("the discovery manifest advertises a catalog endpoint",
+      bool(advertised), advertised or "missing - falling back to /aci/catalog")
+
+agent_views = {}
+for path in [p for p in (advertised or "/aci/catalog", "/aci/catalog/jsonld") if p]:
+    status, public = call(path)
+    if endpoint_ok(f"GET {path} responds 200", status, public):
+        agent_views[path] = public
+
+check("the advertised path really serves product data",
+      any(numbers_in(view) for view in agent_views.values()),
+      f"{len(agent_views)} agent-facing endpoints readable")
+
+# Two independent scans. The first catches an obvious field name. The second
+# catches the same secret hidden behind a harmless name, by hunting for the
+# cost FIGURES themselves (taken from the merchant-only endpoint above).
+cost_figures = set()
+for product in products:
+    cost = product.get("cost_inr")
+    if cost:
+        cost_figures.add(round(float(cost), 2))
+        cost_figures.add(round(float(cost) * 100, 2))  # in case paise leak
+
+for path, view in agent_views.items():
+    text = json.dumps(view).lower()
+    named = [word for word in ("cost_price", "cost_inr", "cost_paise",
+                               "min_margin", "margin_percentage", "floor")
+             if word in text]
+    check(f"no cost or margin field name appears in {path}", not named,
+          "leaked: " + ", ".join(named) if named else "clean")
+
+    exposed = sorted(cost_figures & numbers_in(view))
+    check(f"no cost figure appears anywhere in {path}", not exposed,
+          f"LEAKED: {exposed} - these match merchant cost prices"
+          if exposed else
+          f"{len(numbers_in(view))} numbers checked against "
+          f"{len(cost_figures) // 2} cost prices")
 
 # --------------------------------------------------------------------------
 head("6. Negotiation produces a structured intent (LLM is alive)")
@@ -223,15 +363,31 @@ status, negotiated = call(
     },
 )
 negotiated = negotiated or {}
+MODEL_CALLS[0] += 2
 intent = negotiated.get("proposed_intent") or {}
 items = intent.get("items") or []
-check("POST /agent/negotiate responds 200", status == 200, f"status {status}")
-check("the model returned at least one item", len(items) > 0, f"{len(items)} items")
-check(
-    "the model never returns an empty basket",
-    len(items) > 0,
-    "guards the Rs.0-order bug found in Phase 5",
-)
+if endpoint_ok("POST /agent/negotiate responds 200", status, negotiated):
+    check("the model returned at least one item", len(items) > 0,
+          f"{len(items)} items")
+    # A different property from "not empty": no line may be unchargeable.
+    # A zero/negative price or a zero quantity is how the Phase 5 Rs.0-order
+    # bug looked. A price of None is legal - it means "no counter-offer, use
+    # the list price" - so only a present-but-worthless value counts here.
+    unchargeable = []
+    for item in items:
+        price = item.get("proposed_unit_price_inr")
+        if price is not None and float(price) <= 0:
+            unchargeable.append(f"{item.get('sku')} priced {price}")
+        if (item.get("quantity") or 0) <= 0:
+            unchargeable.append(f"{item.get('sku')} qty {item.get('quantity')}")
+    check("no proposed line is unchargeable (zero price or zero quantity)",
+          not unchargeable,
+          "; ".join(unchargeable) or
+          "guards the Rs.0-order bug found in Phase 5")
+else:
+    skip("the model returned at least one item", "the negotiate call failed")
+    skip("no proposed line is unchargeable (zero price or zero quantity)",
+         "same reason")
 served = (negotiated.get("ai_proposal") or {}).get("served_by")
 info(f"served by: {served}")
 info("negotiate must not create an order -> "
@@ -249,7 +405,16 @@ subtotal = attempt.get("subtotal_inr") or 0
 first_order_id = attempt.get("order_id")
 info(f"agent proposed Rs.{subtotal}, mandate allows Rs.{per_tx}")
 
-if is_replay(attempt):
+if not endpoint_ok("POST /agent/purchase responds 200", status, over):
+    # Without this guard the checks below would read {} and print [PASS] for
+    # "no line was charged below its floor" - true only because there were no
+    # lines at all. That false green is what prompted this rewrite.
+    for pending in ("an over-cap basket is rejected",
+                    "NO Razorpay call was made on the rejected order",
+                    "a machine-readable reason is returned"):
+        skip(pending, f"the purchase call returned {status}, so there is no"
+                      " policy decision to inspect")
+elif is_replay(attempt):
     # The enclave refused to re-evaluate a basket it has already priced. The
     # safety property is still checkable - just against the stored order
     # rather than a fresh decision object.
@@ -286,8 +451,20 @@ else:
     info("basket came in under the cap this run; cap rejection not exercised here")
     check("under-cap basket was approved", decision.get("approved") is True)
 
-check("no line was ever charged below its floor",
-      not floor_violations(attempt), "; ".join(floor_violations(attempt)))
+if status != 200:
+    skip("no line was ever charged below its floor",
+         "the call failed, so no priced lines exist to inspect")
+elif not lines_of(attempt):
+    # Zero lines cannot violate a floor, so calling that a PASS would be
+    # dishonest. Say plainly that there was nothing to measure.
+    skip("no line was ever charged below its floor",
+         "this reply carried no priced lines (a replay returns the stored"
+         " order instead of a fresh decision)")
+else:
+    check("no line was ever charged below its floor",
+          not floor_violations(attempt),
+          "; ".join(floor_violations(attempt))
+          or f"{len(lines_of(attempt))} priced lines inspected")
 
 # --------------------------------------------------------------------------
 head("8. The same intent cannot be charged twice (idempotency)")
@@ -296,35 +473,49 @@ count_before = (summary_before or {}).get("order_count")
 
 status, again = buy(OVER_CAP_REQUEST, 7000)
 replayed = again.get("enclave_result") or {}
-check("POST /agent/purchase responds 200 on a repeat", status == 200, f"status {status}")
-check(
-    "an identical intent is recognised as a replay",
-    is_replay(replayed),
-    f"idempotent_replay={replayed.get('idempotent_replay')}",
-)
-check(
-    "the replay returns the ORIGINAL order, not a new one",
-    replayed.get("order_id") == first_order_id and first_order_id is not None,
-    f"order {first_order_id} -> order {replayed.get('order_id')}",
-)
-check(
-    "the replay reuses the same idempotency fingerprint",
-    bool(replayed.get("idempotency_key")),
-    str(replayed.get("idempotency_key"))[:16] + "...",
-)
+if not endpoint_ok("POST /agent/purchase responds 200 on a repeat", status, again):
+    for pending in ("an identical intent is recognised as a replay",
+                    "the replay returns the ORIGINAL order, not a new one",
+                    "the replay reuses the same idempotency fingerprint",
+                    "a replay does not create a second order row",
+                    "a replay never fires a fresh Razorpay call"):
+        skip(pending, f"the repeat call returned {status}")
+elif first_order_id is None:
+    for pending in ("an identical intent is recognised as a replay",
+                    "the replay returns the ORIGINAL order, not a new one",
+                    "the replay reuses the same idempotency fingerprint",
+                    "a replay does not create a second order row",
+                    "a replay never fires a fresh Razorpay call"):
+        skip(pending, "section 7 never produced an order to replay")
+else:
+    check(
+        "an identical intent is recognised as a replay",
+        is_replay(replayed),
+        f"idempotent_replay={replayed.get('idempotent_replay')}",
+    )
+    check(
+        "the replay returns the ORIGINAL order, not a new one",
+        replayed.get("order_id") == first_order_id,
+        f"order {first_order_id} -> order {replayed.get('order_id')}",
+    )
+    check(
+        "the replay reuses the same idempotency fingerprint",
+        bool(replayed.get("idempotency_key")),
+        str(replayed.get("idempotency_key"))[:16] + "...",
+    )
 
-status, summary_after = call("/dashboard/summary")
-count_after = (summary_after or {}).get("order_count")
-check(
-    "a replay does not create a second order row",
-    count_before is not None and count_after == count_before,
-    f"{count_before} orders before, {count_after} after",
-)
-check(
-    "a replay never fires a fresh Razorpay call",
-    not money_api_touched(replayed) or replayed.get("order_id") == first_order_id,
-    "any payment artifact must belong to the original order",
-)
+    status, summary_after = call("/dashboard/summary")
+    count_after = (summary_after or {}).get("order_count")
+    check(
+        "a replay does not create a second order row",
+        count_before is not None and count_after == count_before,
+        f"{count_before} orders before, {count_after} after",
+    )
+    check(
+        "a replay never fires a fresh Razorpay call",
+        not money_api_touched(replayed) or replayed.get("order_id") == first_order_id,
+        "any payment artifact must belong to the original order",
+    )
 
 # --------------------------------------------------------------------------
 head("9. Auto-recovery repairs an over-cap basket deterministically")
@@ -338,7 +529,8 @@ RECOVERY_REQUEST = (
 status, resilient = buy(RECOVERY_REQUEST, 9000, resilient=True)
 recovery = resilient.get("recovery") or {}
 first_try = resilient.get("attempt") or {}
-check("POST /recovery/agent-purchase responds 200", status == 200, f"status {status}")
+recovery_ran = endpoint_ok("POST /recovery/agent-purchase responds 200",
+                           status, resilient)
 info(f"first attempt Rs.{first_try.get('subtotal_inr')} "
      f"status={first_try.get('status')}")
 info(f"recovery attempted={recovery.get('attempted')} "
@@ -346,7 +538,14 @@ info(f"recovery attempted={recovery.get('attempted')} "
 info(f"reason: {recovery.get('reason')}")
 
 counter = recovery.get("counter_offer") or {}
-if is_replay(first_try):
+if not recovery_ran:
+    for pending in ("the counter-offer fits inside the per-tx cap",
+                    "the counter-offer is cheaper than the rejected basket",
+                    "the counter-offer produced a real Razorpay artifact",
+                    "no counter-offer line dips below its floor"):
+        skip(pending, f"the recovery call returned {status}, so no"
+                      " counter-offer was produced")
+elif is_replay(first_try):
     skip("auto-recovery produces a compliant counter-offer",
          "this basket was already processed, so recovery had nothing to repair "
          "(run reset_demo.py for this one)")
@@ -365,9 +564,12 @@ elif counter:
     # its own decision with priced lines. That - not the order-detail endpoint -
     # is where floor data lives.
     check("no counter-offer line dips below its floor",
-          not floor_violations(counter),
+          bool(lines_of(counter)) and not floor_violations(counter),
           "; ".join(floor_violations(counter))
-          or "recovery discounts down to the floor, never through it")
+          or (f"{len(lines_of(counter))} repriced lines inspected - recovery"
+              " discounts down to the floor, never through it"
+              if lines_of(counter) else
+              "NO priced lines came back, so nothing was actually verified"))
     check("the counter-offer is linked to a real order row",
           bool(stored_order(counter.get("order_id")).get("id")),
           f"order {counter.get('order_id')}")
@@ -393,16 +595,45 @@ if "MOU-WL-01" in by_sku:
     status, slipped = buy("I need a USB-C hub and a quiet wireless mouse for my desk.",
                           4000, resilient=True)
     slipped_attempt = slipped.get("attempt") or {}
-    if is_replay(slipped_attempt):
+    if not endpoint_ok("POST /recovery/agent-purchase responds 200 after cost"
+                       " slippage", status, slipped):
+        skip("nothing is charged below the NEW floor",
+             f"the call returned {status}; the raised floor was never"
+             " exercised. THIS IS THE STRONGEST DEMO FRAME - fix it before"
+             " recording.")
+    elif is_replay(slipped_attempt):
         skip("nothing is charged below the NEW floor",
              "this basket replayed a stored order, so the raised floor was "
              "never re-evaluated (run reset_demo.py for this one)")
+    elif not lines_of(slipped_attempt):
+        skip("nothing is charged below the NEW floor",
+             "the reply carried no priced lines, so there was nothing to check")
     else:
         violations = floor_violations(slipped_attempt)
         check("nothing is charged below the NEW floor", not violations,
-              "; ".join(violations))
+              "; ".join(violations)
+              or f"{len(lines_of(slipped_attempt))} lines inspected")
         adjusted = [ln.get("sku") for ln in lines_of(slipped_attempt)
                     if ln.get("price_adjusted")]
+        # Only assert the upward override when the slipped SKU is actually in
+        # the basket. The model chooses the basket, so demanding its presence
+        # would make this check fail for a reason that is not a bug.
+        slipped_lines = [ln for ln in lines_of(slipped_attempt)
+                         if ln.get("sku") == "MOU-WL-01"]
+        if slipped_lines:
+            check("the slipped SKU's price was overridden UPWARD to the new floor",
+                  all(ln.get("final_unit_price_paise", 0)
+                      >= ln.get("floor_unit_price_paise", 0)
+                      for ln in slipped_lines)
+                  and any(ln.get("price_adjusted") for ln in slipped_lines),
+                  "; ".join(f"{ln.get('sku')} requested "
+                            f"{rs(ln.get('requested_unit_price_paise'))} -> charged "
+                            f"{rs(ln.get('final_unit_price_paise'))} "
+                            f"(floor {rs(ln.get('floor_unit_price_paise'))})"
+                            for ln in slipped_lines))
+        else:
+            info("MOU-WL-01 was not in the basket this run, so the upward"
+                 " override could not be demonstrated on it")
         info(f"prices overridden upward by the enclave: {adjusted or 'none'}")
 else:
     info("MOU-WL-01 not in catalog; cost-slippage check skipped")
@@ -420,19 +651,31 @@ if "KBD-MECH-01" in by_sku:
         6000, resilient=True)
     sold_attempt = sold_out.get("attempt") or {}
     sold_decision = sold_attempt.get("decision") or {}
-    kbd = [ln for ln in lines_of(sold_attempt) if ln.get("sku") == "KBD-MECH-01"]
-    if is_replay(sold_attempt):
-        skip("an out-of-stock SKU cannot be approved as-is",
+    sold_recovery = sold_out.get("recovery") or {}
+    sold_counter = sold_recovery.get("counter_offer") or {}
+    if not endpoint_ok("POST /recovery/agent-purchase responds 200 after stock"
+                       " slippage", status, sold_out):
+        skip("the sold-out SKU is never inside an APPROVED order",
+             f"the call returned {status}, so no decision exists")
+    elif is_replay(sold_attempt):
+        skip("the sold-out SKU is never inside an APPROVED order",
              "this basket replayed a stored order "
              "(run reset_demo.py for this one)")
-    elif kbd:
-        check("an out-of-stock SKU cannot be approved as-is",
-              sold_decision.get("approved") is False
-              or not money_api_touched(sold_attempt),
-              f"approved={sold_decision.get('approved')}")
     else:
-        info("the model or recovery already dropped the sold-out SKU")
-    sold_recovery = sold_out.get("recovery") or {}
+        # The real invariant is not "the SKU is absent" - a REJECTED decision
+        # may legitimately list it, priced, as the thing it refused. What must
+        # never happen is a sold-out SKU inside something that got approved or
+        # paid for.
+        approved_lines = list(lines_of(sold_counter))
+        if sold_decision.get("approved") is True:
+            approved_lines += lines_of(sold_attempt)
+        charged = [ln.get("sku") for ln in approved_lines]
+        check("the sold-out SKU is never inside an APPROVED order",
+              "KBD-MECH-01" not in charged,
+              f"approved lines: {charged or 'none'} "
+              f"(attempt approved={sold_decision.get('approved')})")
+        in_attempt = [ln.get("sku") for ln in lines_of(sold_attempt)]
+        info(f"the rejected attempt priced: {in_attempt or 'nothing'}")
     info(f"recovery actions: "
          f"{[a.get('step') for a in (sold_recovery.get('actions') or [])]}")
 else:
@@ -468,24 +711,31 @@ check("catalog restored", status == 200, f"{(restored or {}).get('count')} produ
 # --------------------------------------------------------------------------
 print("\n" + "=" * 70)
 print(f"  {len(PASSED)} passed, {len(FAILED)} failed, {len(SKIPPED)} skipped")
+print(f"  AI requests spent this run: about {MODEL_CALLS[0]}"
+      f" (Gemini free tier: 20 per day per model)")
 if FAILED:
     print("\n  Failing checks:")
     for name in FAILED:
         print(f"    - {name}")
     print("\n  Fix these before demoing. Each one is a claim the project makes"
           "\n  about itself that is currently untrue.")
+    print("\n  If a 'responds 200' check failed, read the uvicorn window first."
+          "\n  A 500 there means the request never reached the enclave, so the"
+          "\n  checks under it could not run either.")
 if SKIPPED:
     print("\n  Skipped checks (not failures - this run could not exercise them):")
     for name in SKIPPED:
         print(f"    - {name}")
-    print("\n  Every skip above is idempotency doing its job: an intent this"
-          "\n  agent has already bought is replayed, not re-evaluated. For a"
-          "\n  100% clean sweep, clear the order history and run again:")
+    print("\n  Most skips are idempotency doing its job: an intent this agent"
+          "\n  has already bought is replayed, not re-evaluated. For a clean"
+          "\n  sweep, clear the order history and run again:")
     print("\n      python -m app.database.reset_demo --yes")
     print("      python e2e_check.py")
 if not FAILED and not SKIPPED:
     print("\n  All money-safety invariants hold. The catalog is back to baseline.")
 elif not FAILED:
     print("\n  No invariant was violated. The catalog is back to baseline.")
+print("\n  Not covered here (needs a human and ngrok): real payment settlement"
+      "\n  and webhook HMAC verification, which fill audit stages 5 and 6.")
 print("=" * 70)
 sys.exit(1 if FAILED else 0)
