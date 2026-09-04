@@ -259,14 +259,25 @@ class FakeHttpResponse:
     """
     Just enough of a requests.Response for gorouter_client, including .text - which
     is what _describe_http_error reads to decide WHICH failure this is.
+
+    `headers` matters for one narrow case: Cloudflare sets CF-Mitigated only when
+    Cloudflare ITSELF blocked or challenged the request, so that header is trusted
+    even when the body is JSON. CF-RAY and Server are recorded but deliberately NOT
+    trusted as evidence, because Cloudflare stamps them on every response it proxies,
+    including gorouter's own perfectly genuine errors.
     """
 
     def __init__(
-        self, status_code: int = 200, payload: Any = None, text: str | None = None
+        self,
+        status_code: int = 200,
+        payload: Any = None,
+        text: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.status_code = status_code
         self._payload = payload if payload is not None else {}
         self.text = text if text is not None else json.dumps(self._payload)
+        self.headers = dict(headers or {})
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -289,9 +300,15 @@ class FakeGateway:
         self._pricing = pricing
         self.bodies: list[dict[str, Any]] = []
         self.get_urls: list[str] = []
+        # Headers are recorded because ONE of them is load-bearing: gorouter.app is
+        # behind Cloudflare, which serves an HTML 403 to the default
+        # python-requests User-Agent. See section 17.
+        self.post_headers: list[dict[str, str]] = []
+        self.get_headers: list[dict[str, str]] = []
 
     def post(self, url, headers=None, json=None, timeout=None):  # noqa: A002, ANN001
         self.bodies.append(json or {})
+        self.post_headers.append(dict(headers or {}))
         if isinstance(self._post, list):
             index = min(len(self.bodies) - 1, len(self._post) - 1)
             return self._post[index]
@@ -299,6 +316,7 @@ class FakeGateway:
 
     def get(self, url, headers=None, timeout=None):  # noqa: ANN001
         self.get_urls.append(url)
+        self.get_headers.append(dict(headers or {}))
         return self._pricing
 
 
@@ -1392,6 +1410,397 @@ def section_no_keys_at_all() -> None:
     check("llm_guard still recognises it", llm_guard.is_llm_failure(error))
 
 
+# --------------------------------------------------------------- section 17
+def section_cloudflare_block_is_named() -> None:
+    """
+    The bug that took a working demo down on 2026-09-04.
+
+    gorouter.app sits behind Cloudflare, and Cloudflare answers the DEFAULT
+    python-requests User-Agent with HTTP 403 and an HTML challenge page. The gateway
+    itself is never reached, so the failure carries no hint about credit, keys or
+    model ids - yet every negotiate and purchase call returned 503 while
+    /agent/llm-status cheerfully reported the primary provider as "configured".
+
+    Three things are asserted, because fixing only the first would leave the next
+    person guessing: the browser User-Agent is actually SENT (on both verbs), the
+    resulting error SAYS what happened, and the router does not pay to retry it.
+    """
+    print("\n17. A Cloudflare edge block is named, not mistaken for an outage")
+
+    gateway = FakeGateway(
+        post=FakeHttpResponse(
+            payload={"choices": [{"message": {"content": GOOD_JSON}}]}
+        ),
+        pricing=FakeHttpResponse(payload=PRICING_PAYLOAD),
+    )
+    with patched(
+        gorouter_client,
+        requests=gateway,
+        GOROUTER_API_KEY="sk-test",
+        _cached_catalog=None,
+    ):
+        gorouter_client.generate_json(
+            model=GO_PINNED,
+            system_instruction="be brief",
+            prompt="one wireless mouse",
+            schema=Probe,
+            temperature=0.2,
+        )
+        gorouter_client.discover_catalog(force_refresh=True)
+
+    post_ua = (gateway.post_headers[0] if gateway.post_headers else {}).get(
+        "User-Agent", ""
+    )
+    get_ua = (gateway.get_headers[0] if gateway.get_headers else {}).get(
+        "User-Agent", ""
+    )
+    check(
+        "the model call sends a browser User-Agent (the default one gets a 403)",
+        "Mozilla/" in post_ua,
+        f"got {post_ua!r}",
+    )
+    check(
+        "the keyless catalog GET sends it too - llm-status calls that on every load",
+        "Mozilla/" in get_ua,
+        f"got {get_ua!r}",
+    )
+
+    challenge = FakeHttpResponse(
+        status_code=403,
+        text=(
+            "<!DOCTYPE html><html><head><title>Just a moment...</title></head>"
+            "<body>Attention Required! | Cloudflare</body></html>"
+        ),
+    )
+    error = gorouter_client._describe_http_error(GO_PINNED, challenge)
+    described = str(error)
+    check(
+        "an HTML challenge page is reported as a Cloudflare block",
+        "blocked by cloudflare" in described.lower(),
+        f"got {described[:200]}",
+    )
+    check(
+        "it is NOT misdiagnosed as an empty balance",
+        "out of credit" not in described.lower()
+        and "insufficient_user_quota" not in described.lower(),
+        f"got {described[:200]}",
+    )
+    check(
+        "it states that nothing was billed - no model was ever asked",
+        "nothing was billed" in described.lower(),
+        f"got {described[:200]}",
+    )
+    check(
+        "it names the User-Agent as the thing to check",
+        "user-agent" in described.lower(),
+        f"got {described[:200]}",
+    )
+    check(
+        "llm_router judges it PERMANENT - the same page comes back every time",
+        llm_router._is_permanent(error),
+    )
+    check("...so it is not treated as transient", not llm_router._is_transient(error))
+
+    with world(
+        chain=[],
+        script={},
+        gemini=None,
+        primary="gorouter",
+        go_chain=[GO_PINNED],
+        go_script={GO_PINNED: error},
+        go_attempts=2,
+    ) as (calls, clock):
+        try:
+            ask()
+            raised: BaseException | None = None
+        except RuntimeError as failure:
+            raised = failure
+
+    check(
+        "the pinned model is called ONCE - a blocked request is not retried",
+        calls == [f"gorouter:{GO_PINNED}"],
+        f"got {calls}",
+    )
+    check("no backoff sleep was wasted on it", clock.waits == [], f"got {clock.waits}")
+    check("the router raised rather than inventing an answer", raised is not None)
+    if raised is None:
+        return
+
+    response = llm_guard.unavailable_response(raised, endpoint="/agent/negotiate")
+    body = getattr(response, "body", b"") or b""
+    text = body.decode("utf-8") if isinstance(body, bytes) else str(body)
+    check(
+        "HTTP 503, and the body still swears no money moved",
+        response.status_code == 503
+        and '"money_moved":false' in text.replace(" ", ""),
+        f"got status {response.status_code}",
+    )
+    check(
+        "the advice blames the header or the network, not your credit balance",
+        "User-Agent" in text and "out of credit" not in text.lower(),
+        f"got {text[:400]}",
+    )
+    check(
+        "the advice still offers the one-line escape hatch",
+        "LLM_PRIMARY_PROVIDER=gemini" in text,
+        f"got {text[:400]}",
+    )
+
+    # ---------------------------------------------------------------------
+    # The variant that got through on 2026-09-04, and why word-sniffing lost.
+    # ---------------------------------------------------------------------
+    # The block above is branded in its first 100 bytes, so looking for the word
+    # "cloudflare" found it. A live block did NOT read like that: the branding sat
+    # past the bytes we keep, the message came out as the generic "gorouter HTTP
+    # 403: <markup>", and the 503 then advised waiting 30-60 seconds for a wall.
+    # These four cases pin the SHAPE rule that replaced the word rule.
+    unbranded = gorouter_client._describe_http_error(
+        GO_PINNED,
+        FakeHttpResponse(
+            status_code=403,
+            text="\n\n   <html>\n <head>\n  <title>403 Forbidden</title>\n"
+            " </head>\n <body><h1>403 Forbidden</h1></body>\n</html>\n",
+            headers={"Content-Type": "text/html; charset=UTF-8"},
+        ),
+    )
+    check(
+        "an UNBRANDED web page - no 'cloudflare' anywhere - is still an edge block",
+        "blocked by cloudflare" in str(unbranded).lower(),
+        f"got {str(unbranded)[:220]}",
+    )
+    check(
+        "...so it is never retried either",
+        llm_router._is_permanent(unbranded) and not llm_router._is_transient(unbranded),
+        f"got {str(unbranded)[:220]}",
+    )
+
+    challenged_json = gorouter_client._describe_http_error(
+        GO_PINNED,
+        FakeHttpResponse(
+            status_code=403,
+            text='{"success":false,"errors":[{"code":1020,"message":"Access denied"}]}',
+            headers={
+                "Content-Type": "application/json",
+                "CF-RAY": "8f2c1d0e7a1b0042-BOM",
+                "CF-Mitigated": "challenge",
+                "Server": "cloudflare",
+            },
+        ),
+    )
+    check(
+        "a JSON-shaped block is caught by the CF-Mitigated header instead",
+        "blocked by cloudflare" in str(challenged_json).lower(),
+        f"got {str(challenged_json)[:220]}",
+    )
+
+    # The regression this design must not cause. Cloudflare stamps CF-RAY and
+    # 'Server: cloudflare' on EVERY response it proxies, including gorouter's own
+    # genuine errors, so trusting those headers would relabel a real empty balance as
+    # a network fault and send you to fix your wifi instead of topping up.
+    proxied_but_real = gorouter_client._describe_http_error(
+        GO_PINNED,
+        FakeHttpResponse(
+            status_code=200,
+            text='{"error":{"message":"insufficient_user_quota","type":"new_api_error"}}',
+            headers={"CF-RAY": "8f2c1d0e7a1b0042-BOM", "Server": "cloudflare"},
+        ),
+    )
+    check(
+        "a REAL out-of-credit error that merely passed THROUGH Cloudflare is not"
+        " relabelled as a block",
+        "insufficient_user_quota" in str(proxied_but_real)
+        and "blocked by cloudflare" not in str(proxied_but_real).lower(),
+        f"got {str(proxied_but_real)[:220]}",
+    )
+
+    # A 5xx page means the edge let us through and the gateway itself is unwell.
+    # That IS worth one free retry, so it must NOT carry the permanent marker.
+    unwell = gorouter_client._describe_http_error(
+        GO_PINNED,
+        FakeHttpResponse(
+            status_code=502,
+            text="<html><head><title>502 Bad Gateway</title></head></html>",
+            headers={"Content-Type": "text/html"},
+        ),
+    )
+    check(
+        "a 5xx web page is called an unhealthy gateway, not a block, and is retried",
+        llm_router._is_transient(unwell)
+        and "blocked by cloudflare" not in str(unwell).lower(),
+        f"got {str(unwell)[:220]}",
+    )
+
+    # /agent/llm-status is the page you open when this happens, so it has to say the
+    # same thing. Before this fix it reported requests' own "403 Client Error:
+    # Forbidden for url: ...", which reads like gorouter is at fault.
+    blocked_page = FakeHttpResponse(
+        status_code=403,
+        text="<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare"
+        "</title></head></html>",
+        headers={"Content-Type": "text/html"},
+    )
+    with patched(
+        gorouter_client,
+        requests=FakeGateway(pricing=blocked_page),
+        GOROUTER_API_KEY="sk-test",
+        _cached_catalog=None,
+    ):
+        catalog_report = gorouter_client.catalog_check(force_refresh=True)
+        credit_report = gorouter_client.fetch_balance()
+
+    check(
+        "llm-status reports the catalog as blocked at the edge, in plain English",
+        catalog_report["blocked_at_edge"] is True
+        and "blocked by cloudflare" in (catalog_report["error"] or "").lower(),
+        f"got {catalog_report}",
+    )
+    check(
+        "...and still refuses to claim the gateway is reachable",
+        catalog_report["reachable"] is False
+        and catalog_report["pinned_model_found"] is None,
+        f"got {catalog_report}",
+    )
+    check(
+        "the credit read says the same thing instead of pasting raw markup",
+        credit_report["blocked_at_edge"] is True
+        and "blocked by cloudflare" in (credit_report["error"] or "").lower()
+        and "<html" not in (credit_report["error"] or "").lower(),
+        f"got {credit_report}",
+    )
+    check(
+        "neither diagnostic raised - the page you opened to debug must always load",
+        catalog_report["error"] is not None and credit_report["checked"] is False,
+        f"got {catalog_report['error']!r} / checked={credit_report['checked']}",
+    )
+
+
+# --------------------------------------------------------------- section 18
+def section_blocked_primary_and_dead_backup() -> None:
+    """
+    The 503 that lied on 2026-09-04.
+
+    Both ends of the chain were down for DIFFERENT reasons: gorouter was blocked at
+    the Cloudflare edge, and Gemini's free tier had spent its 20 requests for the
+    day. The old diagnosis matched Gemini's "429 ... quota" first, so it announced a
+    rate limit and said "wait 30-60 seconds and retry" - advice that could never come
+    true for either provider, and that hid the one thing worth knowing.
+
+    This section works on the raw router message, exactly as FastAPI would see it.
+    """
+    print("\n18. A blocked primary plus an exhausted backup is diagnosed as BOTH")
+
+    # Reproduced from the live failure: the HTML body brings its own newlines, and
+    # the words "blocked by cloudflare" are absent because that build of the client
+    # fell through to its generic ">= 400" branch.
+    message = (
+        "All LLM providers failed. Attempts:\n"
+        "- gorouter/claude-opus-5 attempt 1: gorouter HTTP 403: \n"
+        "<!DOCTYPE html>\n"
+        '<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->\n'
+        "  <head>\n"
+        "    <title>Attention Required! | Cloudflare</title>\n"
+        "  </head>\n"
+        "</html>\n"
+        "- gemini/gemini-2.5-flash attempt 1: 429 RESOURCE_EXHAUSTED You exceeded"
+        " your current quota. quotaId:"
+        " GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+    )
+
+    attempts = llm_guard._parse_attempts(message)
+    check(
+        "an embedded web page no longer shreds one failure into a dozen fragments",
+        len(attempts) == 2,
+        f"got {len(attempts)}: {attempts}",
+    )
+    check(
+        "the gorouter attempt survives as ONE flat line",
+        attempts and attempts[0].startswith("gorouter/claude-opus-5 attempt 1"),
+        f"got {attempts[:1]}",
+    )
+    check(
+        "the Gemini reason is not buried under that markup",
+        len(attempts) > 1 and "RESOURCE_EXHAUSTED" in attempts[1],
+        f"got {attempts[1:]}",
+    )
+
+    cause, actions = llm_guard._diagnose(message)
+    joined = " ".join(actions)
+    check(
+        "the cause leads with the edge block, not with a rate limit",
+        "never reached gorouter.app" in cause,
+        f"got {cause[:200]}",
+    )
+    check(
+        "...and does not stop there - it names the exhausted backup as well",
+        "per DAY" in cause and "20 requests" in cause,
+        f"got {cause[:400]}",
+    )
+    check(
+        "the first action is a 10-second test the operator can actually run",
+        actions and "browser" in actions[0],
+        f"got {actions[:1]}",
+    )
+    check(
+        "it never advises waiting 30-60 seconds for a wall that will not move",
+        "30-60" not in joined,
+        f"got {joined[:300]}",
+    )
+    check(
+        "it does not send you to a backup that is itself out of quota",
+        "LLM_PRIMARY_PROVIDER=gemini" not in joined,
+        f"got {joined[:300]}",
+    )
+    check(
+        "it names the daily reset time, so the wait is a known quantity",
+        "12:30 PM IST" in joined,
+        f"got {joined[:300]}",
+    )
+
+    response = llm_guard.unavailable_response(
+        RuntimeError(message), endpoint="/agent/purchase"
+    )
+    text = (getattr(response, "body", b"") or b"").decode("utf-8")
+    check(
+        "the HTTP contract is unchanged: 503, and no money moved",
+        response.status_code == 503 and '"money_moved":false' in text.replace(" ", ""),
+        f"got status {response.status_code}",
+    )
+
+    # And the plain daily-quota case, with no edge block anywhere near it: the same
+    # "wait a minute" advice would be just as wrong there.
+    daily_only = (
+        "All LLM providers failed. Attempts:\n"
+        "- gemini/gemini-2.5-flash attempt 1: 429 RESOURCE_EXHAUSTED You exceeded"
+        " your current quota. quotaId:"
+        " GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+    )
+    daily_cause, daily_actions = llm_guard._diagnose(daily_only)
+    check(
+        "a DAILY quota is called a daily quota, not a per-minute rate limit",
+        "DAILY" in daily_cause and "12:30 PM IST" in daily_cause,
+        f"got {daily_cause[:300]}",
+    )
+    check(
+        "its advice points at the paid primary, not at another 60-second wait",
+        "30-60" not in " ".join(daily_actions)
+        and "LLM_PRIMARY_PROVIDER=gorouter" in " ".join(daily_actions),
+        f"got {daily_actions}",
+    )
+
+    # A per-MINUTE limit is different, and must keep its old advice.
+    minute_only = (
+        "All LLM providers failed. Attempts:\n"
+        "- gorouter/claude-opus-5 attempt 1: gorouter HTTP 429: "
+        '{"error":{"message":"rate limit exceeded, please try again"}}'
+    )
+    minute_cause, minute_actions = llm_guard._diagnose(minute_only)
+    check(
+        "a per-minute rate limit still says to wait a moment and retry",
+        "30-60" in " ".join(minute_actions) and "rate-limit" in minute_cause,
+        f"got {minute_cause[:200]} / {minute_actions}",
+    )
+
+
 def main() -> int:
     print("=" * 72)
     print("APEX-Commerce LLM provider selftest (no network, no keys, no cost)")
@@ -1399,7 +1808,8 @@ def main() -> int:
     print("=" * 72)
 
     # Sections 1-8 cover the new primary provider, 9-14 the fallbacks behind it,
-    # 15-16 the parsing and the empty-config case.
+    # 15-16 the parsing and the empty-config case, 17 the Cloudflare edge block that
+    # broke every call on 2026-09-04, and 18 the misdiagnosis that block produced.
     run(section_provider_order)
     run(section_gorouter_chain_and_catalog)
     run(section_gorouter_client_dialect)
@@ -1416,6 +1826,8 @@ def main() -> int:
     run(section_everything_down_is_honest)
     run(section_chatty_models_still_parse)
     run(section_no_keys_at_all)
+    run(section_cloudflare_block_is_named)
+    run(section_blocked_primary_and_dead_backup)
 
     print("\n" + "=" * 72)
     print(f"{_passed} passed, {_failed} failed")

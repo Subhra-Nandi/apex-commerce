@@ -34,10 +34,12 @@ TWO RULES THIS FILE LEARNED THE HARD WAY
    not /catalog. This file now reads the path out of the discovery manifest
    instead of hard-coding a guess.
 
-A full run costs about 12 Gemini requests, and the free tier allows only
-20 PER DAY per model. Section 1 warns you if the OpenRouter fallback is not
-configured, because without it an exhausted quota turns every negotiation
-into a 500.
+A full run costs about 12 model calls. The primary gateway (gorouter.app,
+running Claude Opus 5) bills PER CALL at 0.3 credits, so a run is roughly
+3.6 credits - about 13 runs per 50 credits, and a retry is a fresh charge.
+Section 1 checks, for free, that the pinned model really exists on the
+gateway and that something is armed behind it, because without a fallback an
+empty balance turns every negotiation into a 503.
 """
 
 import json
@@ -108,11 +110,30 @@ def endpoint_ok(name, status, body=None):
         print(f"  [PASS] {name}  ->  status 200")
         return True
 
+    if status == 503 and isinstance(body, dict):
+        problem = body.get("error") or {}
+        if problem.get("code") == "llm_unavailable":
+            # llm_guard already diagnosed this failure and named the provider
+            # that ran dry. Print ITS answer instead of guessing: an old guess
+            # that blames the wrong provider costs more time than no guess.
+            lines = [
+                "status 503 - no model answered, so the request never reached the",
+                "         enclave: nothing was ordered and no money moved.",
+                f"         likely cause: {problem.get('likely_cause') or 'unknown'}",
+            ]
+            for step in (problem.get("what_to_do") or [])[:4]:
+                lines.append(f"         fix: {step}")
+            for attempt in (problem.get("provider_attempts") or [])[:6]:
+                lines.append(f"         tried: {attempt}")
+            check(name, False, "\n".join(lines))
+            return False
+
     if status >= 500:
         hint = (" - the server raised an exception. Read the uvicorn window."
-                " Most likely 'All LLM providers failed': Gemini's free tier"
-                " is 20 requests PER DAY, and the OpenRouter fallback is not"
-                " picking up the slack.")
+                " If it says 'All LLM providers failed', the primary gateway"
+                " refused and nothing behind it picked up the slack. Check"
+                " GET /agent/llm-status - it reports credit and whether the"
+                " pinned model id actually exists, and costs nothing to call.")
     elif status == 404:
         hint = " - this route does not exist on the server. Wrong path."
     elif status == 0:
@@ -228,28 +249,79 @@ info(f"version {(root or {}).get('version', 'unknown')}")
 # pre-flight that turns a mid-run 500 into a warning you get up front.
 status, llm = call("/agent/llm-status")
 if status == 200:
+    llm = llm or {}
     primary = (llm or {}).get("primary") or {}
     fallback = (llm or {}).get("fallback") or {}
+    gorouter = (llm or {}).get("gorouter") or {}
     check("a primary AI provider is configured",
           bool(primary.get("configured")),
           f"{primary.get('provider')}/{primary.get('model')}")
-    chain = fallback.get("will_try_in_order") or []
+    info("provider order: " + " -> ".join(llm.get("provider_order") or ["?"]))
+
+    # The primary gateway bills PER CALL, and two things there can make every
+    # negotiation below fail. Both are visible for free, right here, before a
+    # single credit is spent: a model id that does not exist on the gateway,
+    # and a machine that cannot reach the gateway at all.
+    if primary.get("provider") == "gorouter":
+        catalog = gorouter.get("catalog") or {}
+        if catalog.get("blocked_at_edge"):
+            # The single most confusing failure this project has: nothing is wrong
+            # with the key, the credit or the model id, and yet every AI section
+            # below will fail. Say so ONCE, here, with the triage in order.
+            check("this machine can reach gorouter.app", False,
+                  "BLOCKED BEFORE THE GATEWAY - Cloudflare (or a proxy/VPN/antivirus"
+                  " on this machine) answered with a web page instead of JSON, so"
+                  " gorouter never saw the request and nothing was billed."
+                  "\n         Every negotiation below will 503 for this one reason."
+                  "\n         1. open https://gorouter.app/api/pricing in a browser:"
+                  " JSON means your network is fine and the block is aimed at the"
+                  " Python client; a Cloudflare page means it is aimed at this IP."
+                  "\n         2. try a phone hotspot, or switch off HTTPS scanning in"
+                  " your antivirus/VPN."
+                  "\n         3. to finish the demo meanwhile, set"
+                  " LLM_PRIMARY_PROVIDER=gemini in backend/.env and restart uvicorn.")
+        elif catalog.get("error"):
+            check("the gorouter.app catalog is reachable", False,
+                  f"{catalog['error']} - this machine could not read the public"
+                  " model list. If that is a connection, DNS or 403 error then"
+                  " EVERY negotiation below will return 503 for the same reason.")
+        else:
+            check("the pinned model exists on the gateway",
+                  catalog.get("pinned_model_found") is True,
+                  f"pinned {primary.get('model')!r},"
+                  f" gateway offers {catalog.get('models_offered')}"
+                  " - ids here carry NO vendor prefix, so 'claude-opus-5' is"
+                  " right and 'anthropic/claude-opus-5' is wrong")
+            price = catalog.get("pinned_model_per_call_price")
+            if price:
+                info(f"billing is per CALL at {price} credits, so this run costs"
+                     f" about {round(12 * float(price), 1)} credits")
+        credit = gorouter.get("credit") or {}
+        if credit.get("error"):
+            info(f"credit read failed ({credit['error']}) - the gateway dashboard"
+                 " is the authority, this endpoint is best-effort only")
+        else:
+            info(f"credit reported: limit={credit.get('reported_limit')}"
+                 f" used={credit.get('used')} remaining={credit.get('remaining')}")
+        info("billable calls this uvicorn process has made so far:"
+             f" {gorouter.get('billable_calls_this_process')}"
+             f" (~{gorouter.get('estimated_credits_spent')} credits)")
+
     if fallback.get("configured"):
-        check("the fallback chain has at least one model",
-              len(chain) > 0,
-              f"{fallback.get('free_models_discovered')} free models discovered, "
-              f"will try {len(chain)}")
-        if fallback.get("discovery_error"):
-            info(f"fallback discovery error: {fallback.get('discovery_error')}")
+        check("a fallback provider is armed",
+              bool(fallback.get("model")),
+              f"{fallback.get('provider')}/{fallback.get('model')}"
+              + (f" - {fallback['note']}" if fallback.get("note") else ""))
     else:
-        info("WARNING: OpenRouter fallback is NOT configured (no API key). If"
-             " Gemini's free daily quota is spent, every negotiation in this"
-             " run will return 500 and the AI-dependent sections will FAIL."
-             " Set OPENROUTER_API_KEY in backend/.env and restart uvicorn.")
+        info("WARNING: nothing is behind the primary. If the primary refuses -"
+             " out of credit, bad key, or unreachable - every negotiation in"
+             " this run returns 503 and the AI-dependent sections all FAIL."
+             " Set GEMINI_API_KEY in backend/.env and restart uvicorn.")
 else:
     info(f"GET /agent/llm-status returned {status}; cannot confirm failover")
-info("this run will spend roughly 12 AI requests; the Gemini free tier"
-     " allows 20 PER DAY per model")
+info("this run spends roughly 12 model calls: about 3.6 credits on gorouter.app"
+     " (billed per call), or 12 of the 20 requests Gemini's free tier allows"
+     " per day per model")
 
 # --------------------------------------------------------------------------
 head("2. Restore the catalog to a known state")
@@ -712,7 +784,8 @@ check("catalog restored", status == 200, f"{(restored or {}).get('count')} produ
 print("\n" + "=" * 70)
 print(f"  {len(PASSED)} passed, {len(FAILED)} failed, {len(SKIPPED)} skipped")
 print(f"  AI requests spent this run: about {MODEL_CALLS[0]}"
-      f" (Gemini free tier: 20 per day per model)")
+      f" (~{round(MODEL_CALLS[0] * 0.3, 1)} gorouter credits at 0.3 per call,"
+      f" or {MODEL_CALLS[0]} of Gemini's 20 free requests per day)")
 if FAILED:
     print("\n  Failing checks:")
     for name in FAILED:

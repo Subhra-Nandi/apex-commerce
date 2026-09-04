@@ -37,6 +37,12 @@ HOW IT DIFFERS FROM OPENROUTER - AND WHY THIS IS A SEPARATE FILE
    Chinese equivalent), so _describe_http_error below deliberately keeps those
    words in the message and llm_router matches them as PERMANENT - never retried.
 
+6. THE GATEWAY ALWAYS ANSWERS JSON - every success AND every error. Anything else
+   was written by something in FRONT of it (the Cloudflare edge, or a proxy/VPN/
+   antivirus doing HTTPS inspection), which means the request was never billed and
+   the failure says nothing about credit, keys or model ids. edge_evidence() below
+   makes that call on the response SHAPE rather than on the words in the page.
+
 Nothing in this file can move money. It returns text; app/agents/llm_router.py
 validates that text against a Pydantic schema, and the deterministic policy
 enclave validates the result AGAIN before Razorpay is ever called.
@@ -61,6 +67,160 @@ _TIMEOUT_SECONDS = 120
 # Per-CALL billing means length is free, and the thinking variant spends tokens on
 # reasoning before it answers. Being stingy here would truncate valid JSON.
 _MAX_OUTPUT_TOKENS = 8000
+
+# gorouter.app SITS BEHIND CLOUDFLARE, AND CLOUDFLARE BLOCKS THE DEFAULT
+# python-requests USER-AGENT. Verified live on 2026-09-04 against the keyless
+# pricing endpoint:
+#
+#     User-Agent: python-requests/2.x  ->  HTTP 403, an HTML challenge page
+#     User-Agent: Mozilla/5.0 ...      ->  HTTP 200, the JSON catalog
+#
+# Every request in this file therefore sends a browser User-Agent. Without it the
+# gateway is unreachable and the failure looks like an outage or a bad key, because
+# the 403 never comes from gorouter itself - it comes from the edge in front of it.
+# Nothing is billed for a blocked request: it never reaches the model.
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+# ---------------------------------------------------------------------------
+# "DID THIS ANSWER EVEN COME FROM THE GATEWAY?"
+# ---------------------------------------------------------------------------
+# gorouter.app answers JSON to EVERYTHING - every success and every failure. So a
+# reply that is not JSON did not come from the gateway at all: something standing
+# in front of it answered instead. Nearly always that is the Cloudflare edge;
+# occasionally it is a corporate proxy, a VPN, or antivirus software doing HTTPS
+# inspection on this machine.
+#
+# Sniffing the body for the word "cloudflare" is NOT enough, and that is not
+# hypothetical. On 2026-09-04 a live block landed in the generic ">= 400" branch of
+# _describe_http_error, so the 503 advised "wait 30-60 seconds" for a wall that
+# never comes down on its own. Cloudflare serves several different pages, some
+# branded only in a footer well past the 400 bytes we keep, and an intercepting
+# proxy may serve a page with no branding at all.
+#
+# So classify on SHAPE rather than wording: not JSON means not gorouter. A
+# redesigned block page cannot defeat that test.
+def _header(response: Any, name: str) -> str:
+    """Read one header without assuming the object carries a real dict."""
+    try:
+        return (getattr(response, "headers", None) or {}).get(name) or ""
+    except Exception:  # noqa: BLE001 - a partial response must not crash the error path
+        return ""
+
+
+def _body_is_json(response: Any) -> bool:
+    """True when the body parses as JSON - i.e. the gateway itself replied."""
+    if "html" in _header(response, "Content-Type").lower():
+        return False
+    try:
+        json.loads(getattr(response, "text", "") or "")
+        return True
+    except Exception:  # noqa: BLE001 - unparseable means "not from the gateway"
+        return False
+
+
+def edge_evidence(response: Any) -> dict[str, Any] | None:
+    """
+    Was this answer written by something in FRONT of gorouter.app?
+
+    Returns the giveaway details, or None when the gateway itself replied - in
+    which case the caller should go on to read the JSON error for a credit, key or
+    model-id problem. Kept public so /agent/llm-status and the selftest can ask the
+    same question the error path asks.
+    """
+    status = int(getattr(response, "status_code", 0) or 0)
+    body = (getattr(response, "text", "") or "")[:400]
+    lowered = body.lower()
+    mitigated = _header(response, "CF-Mitigated")
+
+    branded = bool(mitigated) or any(
+        needle in lowered
+        for needle in ("cloudflare", "attention required", "just a moment", "cf-ray")
+    )
+    looks_like_a_web_page = not _body_is_json(response)
+
+    if status < 400 and not branded and not looks_like_a_web_page:
+        return None
+    if not branded and not looks_like_a_web_page:
+        return None  # a JSON error straight from the gateway - not an edge block
+
+    return {
+        "status": status,
+        "cf_ray": _header(response, "CF-RAY") or None,
+        "server": _header(response, "Server") or None,
+        "cf_mitigated": mitigated or None,
+        "branded": branded,
+        "snippet": " ".join(body.split())[:160],
+    }
+
+
+def _fingerprint(evidence: dict[str, Any]) -> str:
+    """The headers worth quoting to support, if the response carried them."""
+    trace = [
+        label
+        for label in (
+            f"CF-RAY {evidence['cf_ray']}" if evidence.get("cf_ray") else "",
+            f"Server: {evidence['server']}" if evidence.get("server") else "",
+            f"CF-Mitigated: {evidence['cf_mitigated']}"
+            if evidence.get("cf_mitigated")
+            else "",
+        )
+        if label
+    ]
+    return f" [{'; '.join(trace)}]" if trace else ""
+
+
+def _edge_block_error(label: str, evidence: dict[str, Any]) -> RuntimeError:
+    """
+    One honest sentence for "your request never reached gorouter.app".
+
+    The words "BLOCKED BY CLOUDFLARE" are load-bearing twice over:
+    llm_router._PERMANENT_MARKERS matches them so the call is never retried - a
+    retry meets the same wall and would only waste demo seconds - and
+    llm_guard._diagnose matches them so the 503 blames the network instead of your
+    credit balance.
+    """
+    return RuntimeError(
+        f"gorouter request for {label} was BLOCKED BY CLOUDFLARE before it reached "
+        f"the gateway: HTTP {evidence['status']} carrying a web page instead of JSON. "
+        f"gorouter.app answers JSON to everything, so the gateway never saw this "
+        f"request. Nothing was billed, because no model was asked. This is a network "
+        f"or request-header problem - NOT credit, NOT your API key, NOT the model id. "
+        f"This client already sends a browser User-Agent, so if you are seeing this "
+        f"then an HTTPS-inspecting proxy, VPN or antivirus is rewriting the request, "
+        f"or Cloudflare is challenging this IP address."
+        f"{_fingerprint(evidence)} Detail: {evidence['snippet'][:120]}"
+    )
+
+
+def _origin_error(label: str, evidence: dict[str, Any]) -> RuntimeError:
+    """
+    A 5xx web page means the edge got through and the GATEWAY is unhealthy.
+
+    Deliberately worded WITHOUT the permanent marker, so llm_router is still allowed
+    its one retry: an origin hiccup often clears in seconds, and a request that
+    never reached a model was never billed, so the retry is free.
+    """
+    return RuntimeError(
+        f"gorouter HTTP {evidence['status']} for {label}: the gateway answered with a "
+        f"web page instead of JSON, which means its own front door is unhealthy rather "
+        f"than a model refusing you. Nothing was billed. This is usually brief - retry "
+        f"in a few seconds, and check https://gorouter.app if it persists."
+        f"{_fingerprint(evidence)} Detail: {evidence['snippet'][:120]}"
+    )
+
+
+def _edge_error_or_none(label: str, response: Any) -> RuntimeError | None:
+    """The one place that decides edge-block vs unhealthy-origin vs real reply."""
+    evidence = edge_evidence(response)
+    if evidence is None:
+        return None
+    if evidence["status"] >= 500:
+        return _origin_error(label, evidence)
+    return _edge_block_error(label, evidence)
+
 
 # Catalog from GET /api/pricing. Populated lazily; needs no API key.
 _cached_catalog: dict[str, dict[str, Any]] | None = None
@@ -109,10 +269,18 @@ def candidate_models() -> list[str]:
 
 
 def _headers() -> dict[str, str]:
+    """Authenticated headers. The User-Agent is not cosmetic - see _USER_AGENT."""
     return {
         "Authorization": f"Bearer {GOROUTER_API_KEY}",
         "Content-Type": "application/json",
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/json",
     }
+
+
+def _public_headers() -> dict[str, str]:
+    """Headers for the KEYLESS endpoints. No Authorization, same Cloudflare dance."""
+    return {"User-Agent": _USER_AGENT, "Accept": "application/json"}
 
 
 def _site_root() -> str:
@@ -145,7 +313,16 @@ def discover_catalog(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
 
     # Short timeout on purpose: this runs while /agent/llm-status is loading, and a
     # slow diagnostic during a demo is worse than a missing one.
-    response = requests.get(f"{_site_root()}/api/pricing", timeout=10)
+    response = requests.get(
+        f"{_site_root()}/api/pricing", headers=_public_headers(), timeout=10
+    )
+
+    # requests' own raise_for_status() would say "403 Client Error: Forbidden for
+    # url: ..." and nothing more, which is what made a Cloudflare block look like a
+    # gorouter problem on /agent/llm-status. Explain it properly first.
+    edge = _edge_error_or_none("the public pricing catalog", response)
+    if edge is not None:
+        raise edge
     response.raise_for_status()
     payload = response.json()
 
@@ -175,12 +352,16 @@ def catalog_check(force_refresh: bool = True) -> dict[str, Any]:
         "models_offered": [],
         "pinned_model_found": None,
         "pinned_model_per_call_price": None,
+        # True when the request died in front of the gateway. e2e_check.py and the
+        # dashboard read this instead of pattern-matching the sentence below.
+        "blocked_at_edge": False,
         "error": None,
     }
     try:
         catalog = discover_catalog(force_refresh=force_refresh)
     except Exception as error:  # noqa: BLE001 - see docstring
         report["error"] = str(error)[:300]
+        report["blocked_at_edge"] = "blocked by cloudflare" in str(error).lower()
         return report
 
     pinned = primary_model()
@@ -206,6 +387,7 @@ def fetch_balance() -> dict[str, Any]:
         "reported_limit": None,
         "used": None,
         "remaining": None,
+        "blocked_at_edge": False,
         "error": None,
         "note": (
             "gorouter.app reuses OpenAI's billing field names for its own credit "
@@ -221,6 +403,15 @@ def fetch_balance() -> dict[str, Any]:
         subscription = requests.get(
             f"{base}/dashboard/billing/subscription", headers=_headers(), timeout=8
         )
+
+        # Same trap as the catalog: this used to paste a raw HTML challenge page into
+        # the status report, where it read like a gorouter fault. Name it instead.
+        edge = _edge_error_or_none("the billing endpoint", subscription)
+        if edge is not None:
+            report["error"] = str(edge)[:300]
+            report["blocked_at_edge"] = "blocked by cloudflare" in str(edge).lower()
+            return report
+
         if subscription.status_code >= 400:
             report["error"] = f"HTTP {subscription.status_code}: {subscription.text[:160]}"
             return report
@@ -319,6 +510,17 @@ def _describe_http_error(model: str, response: requests.Response) -> RuntimeErro
     body = (response.text or "")[:400]
     lowered = body.lower()
 
+    # Did we even reach the gateway? gorouter answers JSON to everything, so a body
+    # that is NOT JSON was written by something in front of it - the Cloudflare edge,
+    # or a proxy/VPN/antivirus intercepting HTTPS on this machine. Say that plainly:
+    # it is neither a credit problem nor a bad model id, and diagnosing it as either
+    # sends you looking in the wrong place. The test is on the response SHAPE, not on
+    # the words in the page: Cloudflare has several block pages and an intercepting
+    # proxy may have no branding at all. See edge_evidence() above.
+    edge = _edge_error_or_none(f"model '{model}'", response)
+    if edge is not None:
+        return edge
+
     if any(hint in lowered for hint in _QUOTA_HINTS):
         return RuntimeError(
             f"gorouter insufficient_user_quota for '{model}': this account is out of "
@@ -391,7 +593,13 @@ def generate_json(
     )
 
     # A rejected request is never billed, so retrying once without the hint is free.
-    if response.status_code >= 400 and "response_format" in response.text:
+    # Skip that retry when the reply never came from the gateway (an edge block), because
+    # a second identical request just meets the same wall a second time.
+    if (
+        response.status_code >= 400
+        and edge_evidence(response) is None
+        and "response_format" in response.text
+    ):
         payload.pop("response_format", None)
         response = requests.post(
             url, headers=_headers(), json=payload, timeout=_TIMEOUT_SECONDS
