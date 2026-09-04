@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>APEX-COMMERCE - Architecture</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #09090b; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; }
+  svg  { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<svg viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="APEX-Commerce architecture: a generative agent layer whose output is a JSON intent, a deterministic policy enclave that alone may authorise a charge, and an execution layer with an append-only audit ledger.">
+<text x="60" y="54" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="28" font-weight="700" fill="#34d399" text-anchor="start" letter-spacing="3.4">APEX-COMMERCE</text>
+<text x="60" y="80" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#52525b" text-anchor="start">Architecture  ·  Razorpay Buildathon  ·  Track 01 AI Growth &amp; Agentic Commerce</text>
+<text x="1540" y="54" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="15" font-weight="400" fill="#a1a1aa" text-anchor="end">Agentic Policy &amp; Negotiated Execution Exchange</text>
+<text x="1540" y="80" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#52525b" text-anchor="end">the AI proposes the price  ·  deterministic code decides if it may be charged</text>
+<text x="60" y="133" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="700" fill="#22d3ee" text-anchor="start" letter-spacing="2.6">GENERATIVE</text>
+<text x="390" y="133" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#52525b" text-anchor="start">probabilistic  ·  creative  ·  zero authority</text>
+<rect x="60" y="160" width="248" height="104" rx="12" fill="#18181b" stroke="#3f3f46" stroke-width="1.5"/>
+<text x="78" y="184" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#52525b" text-anchor="start" letter-spacing="1.6">01</text>
+<text x="78" y="214" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="18.5" font-weight="700" fill="#fafafa" text-anchor="start">Buyer Agent</text>
+<text x="78" y="236" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">an external AI shopper</text>
+<text x="78" y="253" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">plain English + a budget</text>
+<rect x="368" y="160" width="248" height="104" rx="12" fill="#18181b" stroke="#3f3f46" stroke-width="1.5"/>
+<text x="386" y="184" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#52525b" text-anchor="start" letter-spacing="1.6">02</text>
+<text x="386" y="214" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="18.5" font-weight="700" fill="#fafafa" text-anchor="start">ACI Catalog</text>
+<text x="386" y="236" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">JSON-LD  ·  /aci/catalog</text>
+<text x="386" y="253" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#34d399" text-anchor="start">cost + margin stripped</text>
+<rect x="676" y="160" width="248" height="104" rx="12" fill="#18181b" stroke="#3f3f46" stroke-width="1.5"/>
+<text x="694" y="184" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#52525b" text-anchor="start" letter-spacing="1.6">03</text>
+<text x="694" y="214" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="18.5" font-weight="700" fill="#fafafa" text-anchor="start">Front Agent</text>
+<text x="694" y="236" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">Claude Opus 5</text>
+<text x="694" y="253" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">assembles the bundle</text>
+<rect x="984" y="160" width="248" height="104" rx="12" fill="#18181b" stroke="#3f3f46" stroke-width="1.5"/>
+<text x="1002" y="184" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#52525b" text-anchor="start" letter-spacing="1.6">04</text>
+<text x="1002" y="214" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="18.5" font-weight="700" fill="#fafafa" text-anchor="start">Negotiator Agent</text>
+<text x="1002" y="236" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">Claude Opus 5</text>
+<text x="1002" y="253" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">prices it, cross-sells</text>
+<rect x="1292" y="160" width="248" height="104" rx="12" fill="#082f36" stroke="#0e7490" stroke-width="1.5"/>
+<text x="1310" y="184" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#52525b" text-anchor="start" letter-spacing="1.6">05</text>
+<text x="1310" y="214" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="18.5" font-weight="700" fill="#fafafa" text-anchor="start">JSON Intent</text>
+<text x="1310" y="236" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">Pydantic-validated</text>
+<text x="1310" y="253" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#22d3ee" text-anchor="start">the only output it has</text>
+<line x1="320" y1="212.0" x2="347" y2="212.0" stroke="#3f3f46" stroke-width="2.0"/>
+<path d="M 356 212.0 L 346 206.5 L 346 217.5 Z" fill="#3f3f46"/>
+<line x1="628" y1="212.0" x2="655" y2="212.0" stroke="#3f3f46" stroke-width="2.0"/>
+<path d="M 664 212.0 L 654 206.5 L 654 217.5 Z" fill="#3f3f46"/>
+<line x1="936" y1="212.0" x2="963" y2="212.0" stroke="#3f3f46" stroke-width="2.0"/>
+<path d="M 972 212.0 L 962 206.5 L 962 217.5 Z" fill="#3f3f46"/>
+<line x1="1244" y1="212.0" x2="1271" y2="212.0" stroke="#3f3f46" stroke-width="2.0"/>
+<path d="M 1280 212.0 L 1270 206.5 L 1270 217.5 Z" fill="#3f3f46"/>
+<line x1="60" y1="330" x2="470" y2="330" stroke="#10b981" stroke-width="1.6" stroke-dasharray="9 9" stroke-opacity="0.55"/>
+<line x1="1130" y1="330" x2="1540" y2="330" stroke="#10b981" stroke-width="1.6" stroke-dasharray="9 9" stroke-opacity="0.55"/>
+<rect x="480" y="315" width="640" height="30" fill="#09090b"/>
+<text x="800" y="335" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="14" font-weight="700" fill="#34d399" text-anchor="middle" letter-spacing="2.8">THE MODEL'S AUTHORITY ENDS HERE</text>
+<line x1="1416.0" y1="272" x2="1416.0" y2="363" stroke="#0e7490" stroke-width="2.4"/>
+<path d="M 1416.0 372 L 1410.5 362 L 1421.5 362 Z" fill="#0e7490"/>
+<rect x="60" y="374" width="1480" height="222" rx="14" fill="#062a20" stroke="#10b981" stroke-width="2.5"/>
+<text x="92" y="418" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="#34d399" text-anchor="start" letter-spacing="0.6">THE DETERMINISTIC POLICY ENCLAVE</text>
+<text x="716" y="418" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13.5" font-weight="400" fill="#d4d4d8" text-anchor="start">pure Python  ·  no model  ·  no randomness  ·  unit-tested</text>
+<text x="1508" y="418" font-family="'JetBrains Mono', Consolas, 'Courier New', monospace" font-size="13" font-weight="400" fill="#6ee7b7" text-anchor="end" opacity="0.9">enclave/policy_rules.py</text>
+<rect x="92" y="444" width="336" height="128" rx="10" fill="#0a3a2b" stroke="#10b981" stroke-width="1.4" stroke-opacity="0.5"/>
+<text x="110" y="476" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="16.5" font-weight="700" fill="#6ee7b7" text-anchor="start">Margin floor</text>
+<text x="110" y="502" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">unit price  ≥  the floor</text>
+<text x="110" y="520" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">ceil(cost × (1 + margin))</text>
+<text x="110" y="538" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">an under-priced line is</text>
+<text x="110" y="556" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">pushed UP, never refused</text>
+<rect x="452" y="444" width="336" height="128" rx="10" fill="#0a3a2b" stroke="#10b981" stroke-width="1.4" stroke-opacity="0.5"/>
+<text x="470" y="476" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="16.5" font-weight="700" fill="#6ee7b7" text-anchor="start">Spending mandate</text>
+<text x="470" y="502" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">per transaction  ≤  ₹5,000</text>
+<text x="470" y="520" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">per day  ≤  ₹15,000</text>
+<text x="470" y="538" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">the daily figure is summed</text>
+<text x="470" y="556" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">from order rows, not stored</text>
+<rect x="812" y="444" width="336" height="128" rx="10" fill="#0a3a2b" stroke="#10b981" stroke-width="1.4" stroke-opacity="0.5"/>
+<text x="830" y="476" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="16.5" font-weight="700" fill="#6ee7b7" text-anchor="start">Stock &amp; minimums</text>
+<text x="830" y="502" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">live stock depth re-checked</text>
+<text x="830" y="520" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">empty basket blocked</text>
+<text x="830" y="538" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">order ≥ 100 paise, because</text>
+<text x="830" y="556" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">Razorpay rejects less</text>
+<rect x="1172" y="444" width="336" height="128" rx="10" fill="#0a3a2b" stroke="#10b981" stroke-width="1.4" stroke-opacity="0.5"/>
+<text x="1190" y="476" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="16.5" font-weight="700" fill="#6ee7b7" text-anchor="start">Idempotency</text>
+<text x="1190" y="502" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">SHA-256 over the INTENT:</text>
+<text x="1190" y="520" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">agent + SKUs + qty + price</text>
+<text x="1190" y="538" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">a true replay returns the</text>
+<text x="1190" y="556" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#d4d4d8" text-anchor="start">original order, not a charge</text>
+<rect x="60" y="642" width="464" height="96" rx="12" fill="#18181b" stroke="#fb7185" stroke-width="1.6" stroke-opacity="0.55"/>
+<text x="80" y="676" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="17" font-weight="700" fill="#fb7185" text-anchor="start">REJECTED</text>
+<text x="80" y="700" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#a1a1aa" text-anchor="start">Razorpay is never called at all</text>
+<text x="80" y="718" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#a1a1aa" text-anchor="start">machine-readable reasons out</text>
+<line x1="292.0" y1="602" x2="292.0" y2="631" stroke="#fb7185" stroke-width="2.0"/>
+<path d="M 292.0 640 L 286.5 630 L 297.5 630 Z" fill="#fb7185"/>
+<rect x="568" y="642" width="464" height="96" rx="12" fill="#18181b" stroke="#34d399" stroke-width="1.6" stroke-opacity="0.55"/>
+<text x="588" y="676" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="17" font-weight="700" fill="#34d399" text-anchor="start">APPROVED  ·  under ₹2,000</text>
+<text x="588" y="700" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#a1a1aa" text-anchor="start">Razorpay Orders API</text>
+<text x="588" y="718" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#a1a1aa" text-anchor="start">charged straight through</text>
+<line x1="800.0" y1="602" x2="800.0" y2="631" stroke="#34d399" stroke-width="2.0"/>
+<path d="M 800.0 640 L 794.5 630 L 805.5 630 Z" fill="#34d399"/>
+<rect x="1076" y="642" width="464" height="96" rx="12" fill="#18181b" stroke="#fbbf24" stroke-width="1.6" stroke-opacity="0.55"/>
+<text x="1096" y="676" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="17" font-weight="700" fill="#fbbf24" text-anchor="start">APPROVED  ·  over ₹2,000</text>
+<text x="1096" y="700" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#a1a1aa" text-anchor="start">Razorpay Payment Link</text>
+<text x="1096" y="718" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="13" font-weight="400" fill="#a1a1aa" text-anchor="start">a human decides</text>
+<line x1="1308.0" y1="602" x2="1308.0" y2="631" stroke="#fbbf24" stroke-width="2.0"/>
+<path d="M 1308.0 640 L 1302.5 630 L 1313.5 630 Z" fill="#fbbf24"/>
+<path d="M 78 738 L 78 764 L 28 764 L 28 485.0 L 50 485.0" fill="none" stroke="#fb7185" stroke-width="2" stroke-opacity="0.75" stroke-dasharray="7 6"/>
+<path d="M 60 485.0 L 49 479.5 L 49 490.5 Z" fill="#fb7185"/>
+<text x="90" y="769" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#fb7185" text-anchor="start" opacity="0.95">auto-recovery reprices to the floor, then re-enters the enclave</text>
+<rect x="60" y="790" width="1480" height="76" rx="12" fill="#18181b" stroke="#3f3f46" stroke-width="1.5"/>
+<line x1="800" y1="806" x2="800" y2="850" stroke="#3f3f46" stroke-width="1.5"/>
+<text x="100" y="821" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="14.5" font-weight="700" fill="#fafafa" text-anchor="start" letter-spacing="1.2">STAGE 5  ·  WEBHOOK VERIFICATION</text>
+<text x="100" y="844" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">X-Razorpay-Signature checked with HMAC-SHA256 and hmac.compare_digest</text>
+<text x="840" y="821" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="14.5" font-weight="700" fill="#fafafa" text-anchor="start" letter-spacing="1.2">STAGE 6  ·  APPEND-ONLY AUDIT LEDGER</text>
+<text x="840" y="844" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="400" fill="#a1a1aa" text-anchor="start">Postgres JSONB  ·  six stages  ·  nothing is ever updated or deleted</text>
+<line x1="800.0" y1="742" x2="800.0" y2="779" stroke="#34d399" stroke-width="2.0"/>
+<path d="M 800.0 788 L 794.5 778 L 805.5 778 Z" fill="#34d399"/>
+<line x1="1308.0" y1="742" x2="1308.0" y2="779" stroke="#fbbf24" stroke-width="2.0"/>
+<path d="M 1308.0 788 L 1302.5 778 L 1313.5 778 Z" fill="#fbbf24"/>
+<text x="800" y="888" font-family="Inter, 'Segoe UI', system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" fill="#52525b" text-anchor="middle">No code path reaches Razorpay without passing through the enclave.</text>
+</svg>
+</body>
+</html>
