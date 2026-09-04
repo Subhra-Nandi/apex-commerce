@@ -249,7 +249,7 @@ Two terminals, about ten minutes. Windows PowerShell commands come first because
 ### 1 · Clone and install the backend
 
 ```powershell
-git clone https://github.com/<your-github-username>/apex-commerce.git
+git clone https://github.com/Subhra-Nandi/apex-commerce.git
 cd apex-commerce\backend
 python -m venv venv
 .\venv\Scripts\Activate.ps1
@@ -257,7 +257,7 @@ pip install -r requirements.txt
 ```
 
 ```bash
-git clone https://github.com/<your-github-username>/apex-commerce.git
+git clone https://github.com/Subhra-Nandi/apex-commerce.git
 cd apex-commerce/backend
 python3 -m venv venv
 source venv/bin/activate
