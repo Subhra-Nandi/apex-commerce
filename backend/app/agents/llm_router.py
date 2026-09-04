@@ -94,6 +94,10 @@ _PERMANENT_MARKERS = (
     "invalid token",
     "no available channel",
     "无可用渠道",
+    # The request never reached the gateway: Cloudflare answered with an HTML
+    # challenge page. Retrying gets the same page, and nothing was billed, so fail
+    # fast and let the next provider answer.
+    "blocked by cloudflare",
 )
 
 

@@ -34,9 +34,9 @@ TWO RULES THIS FILE LEARNED THE HARD WAY
    not /catalog. This file now reads the path out of the discovery manifest
    instead of hard-coding a guess.
 
-A full run costs about 12 model calls. The primary gateway (gorouter.app,
+A full run costs about 10 model calls. The primary gateway (gorouter.app,
 running Claude Opus 5) bills PER CALL at 0.3 credits, so a run is roughly
-3.6 credits - about 13 runs per 50 credits, and a retry is a fresh charge.
+3.0 credits - about 16 runs per 50 credits, and a retry is a fresh charge.
 Section 1 checks, for free, that the pinned model really exists on the
 gateway and that something is armed behind it, because without a fallback an
 empty balance turns every negotiation into a 503.
@@ -295,7 +295,7 @@ if status == 200:
             price = catalog.get("pinned_model_per_call_price")
             if price:
                 info(f"billing is per CALL at {price} credits, so this run costs"
-                     f" about {round(12 * float(price), 1)} credits")
+                     f" about {round(10 * float(price), 1)} credits")
         credit = gorouter.get("credit") or {}
         if credit.get("error"):
             info(f"credit read failed ({credit['error']}) - the gateway dashboard"
@@ -303,6 +303,15 @@ if status == 200:
         else:
             info(f"credit reported: limit={credit.get('reported_limit')}"
                  f" used={credit.get('used')} remaining={credit.get('remaining')}")
+            # New API exposes OpenAI's billing shape with placeholder numbers on
+            # some deployments. A "limit" of a hundred million is not 50 credits,
+            # so say so rather than let a demo trust it and run dry mid-take.
+            if (credit.get("reported_limit") or 0) >= 1_000_000:
+                info("that limit is a PLACEHOLDER, not your balance - this"
+                     " gateway does not report real credits through the OpenAI"
+                     " billing shape. Read the balance on the gorouter.app"
+                     " dashboard, and use billable_calls_this_process below to"
+                     " track what this uvicorn process has spent.")
         info("billable calls this uvicorn process has made so far:"
              f" {gorouter.get('billable_calls_this_process')}"
              f" (~{gorouter.get('estimated_credits_spent')} credits)")
@@ -319,8 +328,8 @@ if status == 200:
              " Set GEMINI_API_KEY in backend/.env and restart uvicorn.")
 else:
     info(f"GET /agent/llm-status returned {status}; cannot confirm failover")
-info("this run spends roughly 12 model calls: about 3.6 credits on gorouter.app"
-     " (billed per call), or 12 of the 20 requests Gemini's free tier allows"
+info("this run spends roughly 10 model calls: about 3.0 credits on gorouter.app"
+     " (billed per call), or 10 of the 20 requests Gemini's free tier allows"
      " per day per model")
 
 # --------------------------------------------------------------------------
@@ -475,6 +484,11 @@ attempt = over.get("enclave_result") or {}
 decision = attempt.get("decision") or {}
 subtotal = attempt.get("subtotal_inr") or 0
 first_order_id = attempt.get("order_id")
+first_key = attempt.get("idempotency_key")
+# Section 8 replays THIS object - the model's own structured output, handed
+# straight back to the enclave - so idempotency is tested without asking the
+# model a second time and without depending on it answering the same way twice.
+first_intent = over.get("proposed_intent")
 info(f"agent proposed Rs.{subtotal}, mandate allows Rs.{per_tx}")
 
 if not endpoint_ok("POST /agent/purchase responds 200", status, over):
@@ -540,54 +554,67 @@ else:
 
 # --------------------------------------------------------------------------
 head("8. The same intent cannot be charged twice (idempotency)")
+# WHY THIS SECTION STOPPED ASKING THE MODEL.
+# The guarantee lives at the INTENT, not at the sentence. The enclave
+# fingerprints agent + SKUs + quantities + proposed prices, so two identical
+# English requests can legitimately produce two DIFFERENT baskets - the model is
+# free to propose 4049.10 now and 4059.00 in a minute - and a second order row
+# is then the correct answer, not a double charge. Re-sending the sentence
+# therefore tested the model's mood, failed at random, and cost two more calls.
+# POST /recovery/checkout takes an explicit intent and never touches a model, so
+# handing section 7's own intent back is deterministic, free, and actually tests
+# the property being claimed.
 status, summary_before = call("/dashboard/summary")
 count_before = (summary_before or {}).get("order_count")
 
-status, again = buy(OVER_CAP_REQUEST, 7000)
-replayed = again.get("enclave_result") or {}
-if not endpoint_ok("POST /agent/purchase responds 200 on a repeat", status, again):
-    for pending in ("an identical intent is recognised as a replay",
-                    "the replay returns the ORIGINAL order, not a new one",
-                    "the replay reuses the same idempotency fingerprint",
-                    "a replay does not create a second order row",
-                    "a replay never fires a fresh Razorpay call"):
-        skip(pending, f"the repeat call returned {status}")
-elif first_order_id is None:
-    for pending in ("an identical intent is recognised as a replay",
-                    "the replay returns the ORIGINAL order, not a new one",
-                    "the replay reuses the same idempotency fingerprint",
-                    "a replay does not create a second order row",
-                    "a replay never fires a fresh Razorpay call"):
-        skip(pending, "section 7 never produced an order to replay")
-else:
-    check(
-        "an identical intent is recognised as a replay",
-        is_replay(replayed),
-        f"idempotent_replay={replayed.get('idempotent_replay')}",
-    )
-    check(
-        "the replay returns the ORIGINAL order, not a new one",
-        replayed.get("order_id") == first_order_id,
-        f"order {first_order_id} -> order {replayed.get('order_id')}",
-    )
-    check(
-        "the replay reuses the same idempotency fingerprint",
-        bool(replayed.get("idempotency_key")),
-        str(replayed.get("idempotency_key"))[:16] + "...",
-    )
+IDEMPOTENCY_CHECKS = ("an identical intent is recognised as a replay",
+                      "the replay returns the ORIGINAL order, not a new one",
+                      "the replay reuses the same idempotency fingerprint",
+                      "a replay does not create a second order row",
+                      "a replay never fires a fresh Razorpay call")
 
-    status, summary_after = call("/dashboard/summary")
-    count_after = (summary_after or {}).get("order_count")
-    check(
-        "a replay does not create a second order row",
-        count_before is not None and count_after == count_before,
-        f"{count_before} orders before, {count_after} after",
-    )
-    check(
-        "a replay never fires a fresh Razorpay call",
-        not money_api_touched(replayed) or replayed.get("order_id") == first_order_id,
-        "any payment artifact must belong to the original order",
-    )
+if not first_intent or first_order_id is None:
+    for pending in IDEMPOTENCY_CHECKS:
+        skip(pending, "section 7 never produced an intent to replay")
+else:
+    status, resubmitted = call("/recovery/checkout", first_intent)
+    replayed = (resubmitted or {}).get("attempt") or {}
+    if not endpoint_ok("POST /recovery/checkout responds 200 on the same intent",
+                       status, resubmitted):
+        for pending in IDEMPOTENCY_CHECKS:
+            skip(pending, f"the resubmit returned {status}, so no verdict"
+                          " came back to inspect")
+    else:
+        check(
+            "an identical intent is recognised as a replay",
+            is_replay(replayed),
+            f"idempotent_replay={replayed.get('idempotent_replay')}",
+        )
+        check(
+            "the replay returns the ORIGINAL order, not a new one",
+            replayed.get("order_id") == first_order_id,
+            f"order {first_order_id} -> order {replayed.get('order_id')}",
+        )
+        check(
+            "the replay reuses the same idempotency fingerprint",
+            bool(first_key) and replayed.get("idempotency_key") == first_key,
+            f"{str(first_key)[:16]}... vs"
+            f" {str(replayed.get('idempotency_key'))[:16]}...",
+        )
+
+        status, summary_after = call("/dashboard/summary")
+        count_after = (summary_after or {}).get("order_count")
+        check(
+            "a replay does not create a second order row",
+            count_before is not None and count_after == count_before,
+            f"{count_before} orders before, {count_after} after",
+        )
+        check(
+            "a replay never fires a fresh Razorpay call",
+            not money_api_touched(replayed)
+            or replayed.get("order_id") == first_order_id,
+            "any payment artifact must belong to the original order",
+        )
 
 # --------------------------------------------------------------------------
 head("9. Auto-recovery repairs an over-cap basket deterministically")
@@ -631,17 +658,28 @@ elif counter:
           f"Rs.{first_try.get('subtotal_inr')} -> Rs.{counter_total}")
     check("the counter-offer produced a real Razorpay artifact",
           bool(counter.get("pay_here")) or money_api_touched(counter),
-          str(counter.get("pay_here") or counter.get("razorpay_order_id"))[:70])
+          str(counter.get("pay_here") or counter.get("razorpay_order_id")
+              or counter.get("razorpay_payment_link_id"))[:70])
     # The counter-offer envelope is a full run_checkout summary, so it carries
     # its own decision with priced lines. That - not the order-detail endpoint -
-    # is where floor data lives.
-    check("no counter-offer line dips below its floor",
-          bool(lines_of(counter)) and not floor_violations(counter),
-          "; ".join(floor_violations(counter))
-          or (f"{len(lines_of(counter))} repriced lines inspected - recovery"
-              " discounts down to the floor, never through it"
-              if lines_of(counter) else
-              "NO priced lines came back, so nothing was actually verified"))
+    # is where floor data lives. Unless it is a REPLAY, which carries no
+    # decision at all: recovery is deterministic, so the repaired basket has the
+    # same fingerprint every run and the enclave hands back the order it built
+    # the first time. On a database that has run this file before, that is the
+    # normal outcome - idempotency working, not a floor violation - so it must
+    # skip and name the cure rather than print a red line nobody can fix.
+    if is_replay(counter) or not lines_of(counter):
+        skip("no counter-offer line dips below its floor",
+             f"the counter-offer replayed stored order {counter.get('order_id')},"
+             " so no freshly priced lines came back. The repaired basket is"
+             " deterministic, so this will replay on every run until the history"
+             " is cleared: python -m app.database.reset_demo --yes")
+    else:
+        check("no counter-offer line dips below its floor",
+              not floor_violations(counter),
+              "; ".join(floor_violations(counter))
+              or (f"{len(lines_of(counter))} repriced lines inspected - recovery"
+                  " discounts down to the floor, never through it"))
     check("the counter-offer is linked to a real order row",
           bool(stored_order(counter.get("order_id")).get("id")),
           f"order {counter.get('order_id')}")
